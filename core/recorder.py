@@ -25,11 +25,13 @@ class Recorder:
     def __init__(self):
         self.mode = RecordMode.OFF
         self._buffer: io.BytesIO = io.BytesIO()   # 揮発用RAMバッファ
+        self._buffer_lock = threading.Lock()
         self._recording = False
         self._stream = None
         self._audio = None
         self._thread: Optional[threading.Thread] = None
         self._save_dir = os.path.expanduser("~/pli-recordings")
+        self._saved_files: list[str] = []
         self._sample_rate = 16000
         self._channels = 1
 
@@ -45,21 +47,42 @@ class Recorder:
         self._save_dir = path
 
     def start(self):
-        if self.mode == RecordMode.OFF:
+        if self.mode == RecordMode.OFF or self._recording:
             return
         self._recording = True
-        self._buffer = io.BytesIO()
+        with self._buffer_lock:
+            self._buffer = io.BytesIO()
         self._thread = threading.Thread(target=self._record_loop, daemon=True)
         self._thread.start()
 
     def stop(self):
-        self._recording = False
-        if self._thread:
-            self._thread.join(timeout=2)
-            self._thread = None
-
-        if self.mode == RecordMode.SAVE and self._buffer.tell() > 0:
+        self._stop_recording_thread()
+        if self.mode == RecordMode.SAVE and self.get_buffer_size_mb() > 0:
             self._save_to_file()
+
+    def _stop_recording_thread(self, timeout: float = 2.0):
+        """録音スレッドを停止し、音声デバイスを解放する"""
+        self._recording = False
+        self._close_audio_handles()
+        if self._thread:
+            self._thread.join(timeout=timeout)
+            self._thread = None
+        self._close_audio_handles()
+
+    def _close_audio_handles(self):
+        if self._stream:
+            try:
+                self._stream.stop_stream()
+                self._stream.close()
+            except Exception:
+                pass
+            self._stream = None
+        if self._audio:
+            try:
+                self._audio.terminate()
+            except Exception:
+                pass
+            self._audio = None
 
     def _record_loop(self):
         """PyAudioによる録音ループ"""
@@ -75,22 +98,20 @@ class Recorder:
             )
             while self._recording:
                 data = self._stream.read(1024, exception_on_overflow=False)
-                self._buffer.write(data)
+                with self._buffer_lock:
+                    self._buffer.write(data)
         except ImportError:
             # PyAudio未インストール時はダミー録音
             while self._recording:
                 # 無音データを生成
                 silence = b'\x00\x00' * 1024
-                self._buffer.write(silence)
+                with self._buffer_lock:
+                    self._buffer.write(silence)
                 time.sleep(1024 / self._sample_rate)
         except Exception:
             pass
         finally:
-            if self._stream:
-                self._stream.stop_stream()
-                self._stream.close()
-            if self._audio:
-                self._audio.terminate()
+            self._close_audio_handles()
 
     def _save_to_file(self):
         """M4AファイルとしてRAMバッファを保存（WAVで一旦保存）"""
@@ -99,8 +120,11 @@ class Recorder:
         # まずWAVで保存（M4A変換はffmpegで後から可能）
         wav_path = os.path.join(self._save_dir, f"pli_session_{timestamp}.wav")
 
-        self._buffer.seek(0)
-        raw_data = self._buffer.read()
+        with self._buffer_lock:
+            self._buffer.seek(0)
+            raw_data = self._buffer.read()
+        if not raw_data:
+            return None
 
         with wave.open(wav_path, 'wb') as wf:
             wf.setnchannels(self._channels)
@@ -108,29 +132,35 @@ class Recorder:
             wf.setframerate(self._sample_rate)
             wf.writeframes(raw_data)
 
+        self._saved_files.append(wav_path)
         return wav_path
 
-    def wipe(self):
-        """即時消去（パニックボタン用）"""
-        self._recording = False
-        # バッファをゼロで上書きしてから解放
-        size = self._buffer.tell()
-        self._buffer.seek(0)
-        self._buffer.write(b'\x00' * size)
-        self._buffer = io.BytesIO()
+    def purge_saved_files(self):
+        """このプロセスで保存した録音ファイルを削除する"""
+        remaining: list[str] = []
+        for path in self._saved_files:
+            if not path:
+                continue
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except OSError:
+                remaining.append(path)
+        self._saved_files = remaining
 
-        if self._stream:
-            try:
-                self._stream.stop_stream()
-                self._stream.close()
-            except Exception:
-                pass
-        if self._audio:
-            try:
-                self._audio.terminate()
-            except Exception:
-                pass
+    def wipe(self, delete_saved_files: bool = False):
+        """即時消去（パニックボタン用）"""
+        self._stop_recording_thread()
+        # バッファをゼロで上書きしてから解放
+        with self._buffer_lock:
+            size = self._buffer.tell()
+            self._buffer.seek(0)
+            self._buffer.write(b'\x00' * size)
+            self._buffer = io.BytesIO()
+        if delete_saved_files:
+            self.purge_saved_files()
 
     def get_buffer_size_mb(self) -> float:
         """現在のバッファサイズ(MB)"""
-        return self._buffer.tell() / (1024 * 1024)
+        with self._buffer_lock:
+            return self._buffer.tell() / (1024 * 1024)

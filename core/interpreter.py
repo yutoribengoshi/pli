@@ -1342,6 +1342,10 @@ class Interpreter:
         self._nllb_model_dir = nllb_model_dir
         self._models_ready = False  # load_models_async完了後にTrue
         self._on_models_ready: Optional[Callable] = None
+        self._translation_ready = bool(mock)
+        self._stt_ready = False
+        self._model_load_error = ""
+        self._model_load_state = "idle"
 
         # 初期はモックエンジンで起動（GUIブロック防止）
         # --real時は load_models_async() で差し替え
@@ -1358,6 +1362,26 @@ class Interpreter:
         self._load_glossary()
 
     @property
+    def engine_type(self) -> EngineType:
+        return self._engine_type
+
+    @property
+    def translation_ready(self) -> bool:
+        return self._translation_ready
+
+    @property
+    def stt_ready(self) -> bool:
+        return self._stt_ready
+
+    @property
+    def model_load_error(self) -> str:
+        return self._model_load_error
+
+    @property
+    def model_load_state(self) -> str:
+        return self._model_load_state
+
+    @property
     def supports_syntax_check(self) -> bool:
         """現在のエンジンが構文チェックに対応しているか"""
         return not isinstance(self.engine, (NLLBEngine, HybridEngine))
@@ -1371,74 +1395,119 @@ class Interpreter:
             on_progress: 進捗コールバック (phase: str, progress: 0.0〜1.0)
                          phase = "llm" or "stt"
         """
+        self._model_load_state = "loading"
+        self._model_load_error = ""
+        self._models_ready = False
+        self._translation_ready = bool(self.mock)
+        self._stt_ready = False
+
         if self.mock:
             # モックでもSTTだけはWhisperを使う（実際の音声認識が必要）
             def _load_stt_only():
+                load_ok = True
+                message = ""
                 try:
                     print("[info] モックモード: Whisper STTをロード中...")
                     self.stt = WhisperSTT()
+                    self._stt_ready = True
                     print("[info] Whisper STTのロード完了")
                 except Exception as e:
+                    load_ok = False
+                    self._stt_ready = False
+                    message = f"翻訳は利用できますが、音声認識は使えません: {e}"
+                    self._model_load_error = message
                     print(f"[warn] STTロード失敗（モックSTT継続）: {e}")
-                self._models_ready = True
+                self._models_ready = self._translation_ready and self._stt_ready
+                self._model_load_state = "ready" if load_ok else "degraded"
                 if on_ready:
-                    on_ready()
+                    on_ready(load_ok, message)
             threading.Thread(target=_load_stt_only, daemon=True).start()
             return
         self._on_models_ready = on_ready
 
         def _load():
+            load_errors: list[str] = []
+
             # --- 翻訳エンジンのロード ---
-            if self._engine_type == EngineType.HYBRID:
-                self._load_hybrid(on_progress)
-            elif self._engine_type == EngineType.NLLB:
-                self._load_nllb(on_progress)
-            else:
-                self._load_llm(on_progress)
+            try:
+                if self._engine_type == EngineType.HYBRID:
+                    self._load_hybrid(on_progress)
+                elif self._engine_type == EngineType.NLLB:
+                    self._load_nllb(on_progress)
+                else:
+                    self._load_llm(on_progress)
+                self._translation_ready = True
+            except Exception as e:
+                self._translation_ready = False
+                load_errors.append(f"翻訳エンジンのロード失敗: {e}")
+                print(f"[error] {load_errors[-1]}")
 
             try:
                 if on_progress:
                     on_progress("stt", 0.0)
                 print("[info] Whisper STTをロード中...")
                 self.stt = WhisperSTT()
+                self._stt_ready = True
                 if on_progress:
                     on_progress("stt", 1.0)
                 print("[info] Whisper STTのロード完了")
             except Exception as e:
-                print(f"[error] STTロード失敗（モック継続）: {e}")
+                self._stt_ready = False
+                load_errors.append(f"音声認識モデルのロード失敗: {e}")
+                print(f"[error] {load_errors[-1]}")
 
-            self._models_ready = True
+            self._models_ready = self._translation_ready and self._stt_ready
+            if self._models_ready:
+                self._model_load_state = "ready"
+                self._model_load_error = ""
+            elif self._translation_ready or self._stt_ready:
+                self._model_load_state = "degraded"
+                if self._translation_ready and not self._stt_ready:
+                    self._model_load_error = (
+                        "翻訳は利用できますが、音声認識は使えません: "
+                        + " / ".join(load_errors)
+                    )
+                elif self._stt_ready and not self._translation_ready:
+                    self._model_load_error = (
+                        "音声認識は利用できますが、翻訳エンジンは使えません: "
+                        + " / ".join(load_errors)
+                    )
+                else:
+                    self._model_load_error = " / ".join(load_errors)
+            else:
+                self._model_load_state = "error"
+                self._model_load_error = " / ".join(load_errors)
             if self._on_models_ready:
-                self._on_models_ready()
+                self._on_models_ready(self._models_ready, self._model_load_error)
 
         threading.Thread(target=_load, daemon=True).start()
 
     def _load_llm(self, on_progress):
         """LLMエンジン（llama.cpp）のロード"""
+        print("[info] LLMモデルをロード中...")
+        if on_progress:
+            on_progress("llm", 0.0)
+
+        _llm_done = threading.Event()
+        if on_progress and os.path.exists(self._model_path):
+            file_size = os.path.getsize(self._model_path)
+            def _monitor_progress():
+                try:
+                    import resource
+                    start_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+                    while not _llm_done.is_set():
+                        cur_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+                        delta = max(0, cur_rss - start_rss)
+                        ratio = min(delta / file_size, 0.95) if file_size > 0 else 0
+                        on_progress("llm", ratio)
+                        if _llm_done.wait(timeout=1.0):
+                            break
+                except Exception:
+                    pass
+            monitor = threading.Thread(target=_monitor_progress, daemon=True)
+            monitor.start()
+
         try:
-            print("[info] LLMモデルをロード中...")
-            if on_progress:
-                on_progress("llm", 0.0)
-
-            _llm_done = threading.Event()
-            if on_progress and os.path.exists(self._model_path):
-                file_size = os.path.getsize(self._model_path)
-                def _monitor_progress():
-                    try:
-                        import resource
-                        start_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-                        while not _llm_done.is_set():
-                            cur_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-                            delta = max(0, cur_rss - start_rss)
-                            ratio = min(delta / file_size, 0.95) if file_size > 0 else 0
-                            on_progress("llm", ratio)
-                            if _llm_done.wait(timeout=1.0):
-                                break
-                    except Exception:
-                        pass
-                monitor = threading.Thread(target=_monitor_progress, daemon=True)
-                monitor.start()
-
             llm = LLMEngine(self._model_path, n_ctx=self._n_ctx)
             llm._ensure_loaded()
             _llm_done.set()
@@ -1446,52 +1515,47 @@ class Interpreter:
                 on_progress("llm", 1.0)
             self.engine = llm
             print("[info] LLMモデルのロード完了")
-        except Exception as e:
-            print(f"[error] LLMロード失敗: {e}")
+        finally:
+            _llm_done.set()
 
     def _load_nllb(self, on_progress):
         """NLLBエンジン（CTranslate2）のロード"""
-        try:
-            print(f"[info] NLLBモデルをロード中: {self._nllb_model_dir}")
-            if on_progress:
-                on_progress("nllb", 0.0)
+        print(f"[info] NLLBモデルをロード中: {self._nllb_model_dir}")
+        if on_progress:
+            on_progress("nllb", 0.0)
 
-            nllb = NLLBEngine(self._nllb_model_dir)
-            nllb._ensure_loaded()
+        nllb = NLLBEngine(self._nllb_model_dir)
+        nllb._ensure_loaded()
 
-            if on_progress:
-                on_progress("nllb", 1.0)
-            self.engine = nllb
-            print("[info] NLLBモデルのロード完了")
-        except Exception as e:
-            print(f"[error] NLLBロード失敗: {e}")
+        if on_progress:
+            on_progress("nllb", 1.0)
+        self.engine = nllb
+        print("[info] NLLBモデルのロード完了")
 
     def _load_hybrid(self, on_progress):
         """ハイブリッドエンジン（OPUS-MT + NLLB）のロード"""
-        try:
-            print(f"[info] ハイブリッドエンジンをロード中...")
-            if on_progress:
-                on_progress("hybrid", 0.0)
+        print(f"[info] ハイブリッドエンジンをロード中...")
+        if on_progress:
+            on_progress("hybrid", 0.0)
 
-            hybrid = HybridEngine(
-                nllb_model_dir=self._nllb_model_dir,
-                target_lang=self.target_lang,
-            )
+        hybrid = HybridEngine(
+            nllb_model_dir=self._nllb_model_dir,
+            target_lang=self.target_lang,
+        )
 
-            # NLLBフォールバック + 主要OPUS-MTペアを事前ロード
-            done_event = threading.Event()
-            def _on_done():
-                done_event.set()
-            hybrid.load_model_async(on_done=_on_done)
-            done_event.wait(timeout=120)  # 最大2分待機
+        # NLLBフォールバック + 主要OPUS-MTペアを事前ロード
+        done_event = threading.Event()
+        def _on_done():
+            done_event.set()
+        hybrid.load_model_async(on_done=_on_done)
+        if not done_event.wait(timeout=120):
+            raise TimeoutError("ハイブリッドエンジンの初期ロードがタイムアウトしました")
 
-            if on_progress:
-                on_progress("hybrid", 1.0)
-            self.engine = hybrid
-            print(f"[info] ハイブリッドエンジンのロード完了 "
-                  f"(OPUS-MT: {len(hybrid.get_loaded_pairs())}ペア)")
-        except Exception as e:
-            print(f"[error] ハイブリッドエンジンロード失敗: {e}")
+        if on_progress:
+            on_progress("hybrid", 1.0)
+        self.engine = hybrid
+        print(f"[info] ハイブリッドエンジンのロード完了 "
+              f"(OPUS-MT: {len(hybrid.get_loaded_pairs())}ペア)")
 
     def set_target_language(self, lang_code: str):
         """被疑者側の言語を設定"""

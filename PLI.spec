@@ -16,11 +16,48 @@ Notes:
     - Requires macOS 12+ with Apple Silicon for mlx-whisper
 """
 
-import sys
 import os
+import re
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
+    tomllib = None
+
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 block_cipher = None
+ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
+
+
+def _resolve_path(path: str) -> str:
+    return path if os.path.isabs(path) else os.path.join(ROOT_DIR, path)
+
+
+def _read_project_version() -> str:
+    pyproject_path = _resolve_path("pyproject.toml")
+    if tomllib is not None and os.path.exists(pyproject_path):
+        with open(pyproject_path, "rb") as fh:
+            project = tomllib.load(fh).get("project", {})
+        version = project.get("version")
+        if version:
+            return version
+    if os.path.exists(pyproject_path):
+        with open(pyproject_path, "r", encoding="utf-8") as fh:
+            match = re.search(r'^version\s*=\s*"([^"]+)"', fh.read(), re.MULTILINE)
+        if match:
+            return match.group(1)
+    return "2.0.0"
+
+
+APP_VERSION = os.environ.get("PLI_APP_VERSION", _read_project_version())
+BUNDLE_IDENTIFIER = os.environ.get("PLI_BUNDLE_ID", "com.seki.pli")
+CODESIGN_IDENTITY = os.environ.get("APPLE_SIGN_IDENTITY") or None
+ENTITLEMENTS_FILE = os.environ.get("APPLE_ENTITLEMENTS_FILE") or None
+if ENTITLEMENTS_FILE:
+    ENTITLEMENTS_FILE = _resolve_path(ENTITLEMENTS_FILE)
+    if not os.path.exists(ENTITLEMENTS_FILE):
+        raise SystemExit(f"APPLE_ENTITLEMENTS_FILE not found: {ENTITLEMENTS_FILE}")
 
 # Collect hidden imports for ML libraries (lazy-loaded)
 hiddenimports = [
@@ -116,8 +153,8 @@ exe = EXE(
     disable_windowed_traceback=False,
     argv_emulation=True,  # macOS: support file open events
     target_arch='arm64',  # Apple Silicon
-    codesign_identity=None,
-    entitlements_file=None,
+    codesign_identity=CODESIGN_IDENTITY,
+    entitlements_file=ENTITLEMENTS_FILE,
     icon='assets/PLI.icns',
 )
 
@@ -136,12 +173,12 @@ app = BUNDLE(
     coll,
     name='PLI.app',
     icon='assets/PLI.icns',
-    bundle_identifier='com.seki.pli',
+    bundle_identifier=BUNDLE_IDENTIFIER,
     info_plist={
         'CFBundleName': 'PLI',
         'CFBundleDisplayName': 'PLI - Private Link Interpreter',
-        'CFBundleVersion': '2.0.0',
-        'CFBundleShortVersionString': '2.0.0',
+        'CFBundleVersion': APP_VERSION,
+        'CFBundleShortVersionString': APP_VERSION,
         'NSMicrophoneUsageDescription': 'PLI needs microphone access for real-time speech-to-text interpretation.',
         'NSHumanReadableCopyright': 'Copyright 2025 Tomoyuki Seki. All rights reserved.',
         'LSMinimumSystemVersion': '12.0',

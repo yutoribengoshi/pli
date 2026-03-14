@@ -12,6 +12,7 @@ PLI STT Listener - リアルタイム音声認識
 
 import io
 import os
+import shutil
 import time
 import wave
 import struct
@@ -62,6 +63,8 @@ class STTListener:
         # プリセット名（UI表示用）
         self._sensitivity_preset = "normal"  # "high" / "normal" / "low"
         self._tempo_preset = "normal"        # "slow" / "normal" / "fast"
+        self._cleanup_stale_temp_dirs()
+        self._temp_dir = tempfile.mkdtemp(prefix="pli-stt-")
 
     def set_sensitivity(self, preset: str):
         """マイク感度プリセット: high(高感度) / normal(標準) / low(低感度・ノイズ環境)"""
@@ -154,6 +157,24 @@ class STTListener:
             return 0
         samples = struct.unpack(f"<{count}h", audio_data)
         return (sum(s * s for s in samples) / count) ** 0.5
+
+    def _cleanup_stale_temp_dirs(self, max_age_hours: int = 24):
+        """前回クラッシュ等で残った一時音声を起動時に掃除する"""
+        cutoff = time.time() - (max_age_hours * 3600)
+        temp_root = tempfile.gettempdir()
+        try:
+            entries = os.listdir(temp_root)
+        except OSError:
+            return
+        for name in entries:
+            if not name.startswith("pli-stt-"):
+                continue
+            path = os.path.join(temp_root, name)
+            try:
+                if os.path.isdir(path) and os.path.getmtime(path) < cutoff:
+                    shutil.rmtree(path, ignore_errors=True)
+            except OSError:
+                pass
 
     def _listen_loop(self):
         """メインリスニングループ"""
@@ -268,17 +289,18 @@ class STTListener:
             return
 
         # 一時WAVファイルに書き出し
+        tmp_path = None
         try:
             t0 = time.time()
             raw_data = b"".join(audio_chunks)
             duration_sec = len(raw_data) / (self._sample_rate * 2)  # 16bit=2bytes
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-                tmp_path = f.name
-                with wave.open(f, 'wb') as wf:
-                    wf.setnchannels(self._channels)
-                    wf.setsampwidth(2)  # 16bit
-                    wf.setframerate(self._sample_rate)
-                    wf.writeframes(raw_data)
+            fd, tmp_path = tempfile.mkstemp(suffix=".wav", dir=self._temp_dir)
+            os.close(fd)
+            with wave.open(tmp_path, 'wb') as wf:
+                wf.setnchannels(self._channels)
+                wf.setsampwidth(2)  # 16bit
+                wf.setframerate(self._sample_rate)
+                wf.writeframes(raw_data)
 
             # Whisper実行
             t1 = time.time()
@@ -317,6 +339,7 @@ class STTListener:
         finally:
             # 一時ファイル削除
             try:
-                os.unlink(tmp_path)
+                if tmp_path and os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
             except Exception:
                 pass

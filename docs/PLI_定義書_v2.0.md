@@ -298,16 +298,17 @@ CMAKE_ARGS="-DGGML_METAL=on" pip install llama-cpp-python
 | 会話ログ | メモリ（Python list） | セッション終了 / F1 / F2 |
 | 翻訳結果 | メモリ | 同上 |
 | 録音（揮発） | RAM (BytesIO) | アプリ終了 / F1 / F2 |
-| 録音（保存） | ~/pli-recordings/ | 手動削除 |
+| 録音（保存） | ~/pli-recordings/ | 手動削除 / F1設定時 / F2（当該セッション分） |
 | LLMモデル | ~/pli-models/ | 恒久 |
 
 ### 9.2 パニック時の消去手順
 
 1. 全ウィンドウ非表示
 2. 録音バッファをゼロ上書き → 解放
-3. 会話ログ消去
-4. ダミーアプリを前面表示
-5. Dock/Cmd+Tab から除外
+3. 当該セッションで保存した録音ファイルを削除
+4. 会話ログ消去
+5. ダミーアプリを前面表示
+6. Dock/Cmd+Tab から除外
 
 ### 9.3 ネットワーク隔離
 

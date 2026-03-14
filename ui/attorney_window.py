@@ -8,6 +8,9 @@ PLI Attorney Console - 弁護人コンソール画面
 """
 
 import os
+import queue
+import threading
+from dataclasses import dataclass
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -24,6 +27,14 @@ from PySide6.QtGui import QFont, QColor, QKeySequence, QShortcut, QAction, QActi
 from core.interpreter import Interpreter, Utterance, Speaker, SyntaxChunk, EngineType, SUPPORTED_LANGUAGES, get_language_name
 from core.recorder import Recorder, RecordMode
 from ui.defendant_window import DefendantPanel
+
+
+@dataclass(frozen=True)
+class TranslationJob:
+    job_id: int
+    session_token: int
+    kind: str
+    text: str
 
 
 # ---------------------------------------------------------------------------
@@ -1065,6 +1076,7 @@ class AttorneyWindow(QMainWindow):
 
     send_to_defendant = Signal(str, str)
     stream_to_defendant = Signal(str)
+    finish_defendant_stream = Signal()
     defendant_correction = Signal()
     defendant_retry = Signal()
     defendant_update_last = Signal(str)
@@ -1085,6 +1097,11 @@ class AttorneyWindow(QMainWindow):
     opus_download_requested = Signal(str)    # OPUS-MTペアダウンロード要求
     _defendant_translated = Signal(object)   # 被疑者翻訳完了（バックグラウンド→メイン）
     _attorney_translated = Signal(object)    # 弁護人翻訳完了（バックグラウンド→メイン）
+    _manual_attorney_translated = Signal(int, object)
+    _manual_attorney_failed = Signal(int, str)
+    _attorney_translation_failed = Signal(str, str)
+    _interpreter_stream_token_ready = Signal(object, str)
+    _interpreter_utterance_ready = Signal(object)
 
     def __init__(self, interpreter: Interpreter, recorder: Recorder,
                  view_style: str = "split"):
@@ -1098,6 +1115,13 @@ class AttorneyWindow(QMainWindow):
         self._last_defendant_bubble: ConversationBubble | None = None
         self._editing_def_bubble: ConversationBubble | None = None
         self._session_count = 1
+        self._dummy_pdf_path = ""
+        self._pending_attorney_bubbles: dict[int, ConversationBubble] = {}
+        self._translation_job_seq = 0
+        self._translation_session_token = 0
+        self._translation_state_lock = threading.Lock()
+        self._cancelled_translation_job_ids: set[int] = set()
+        self._translation_queue: queue.Queue[TranslationJob | None] = queue.Queue()
         self._embed_visible = False
         self._view_style = view_style      # "split" or "switch"
 
@@ -1115,6 +1139,12 @@ class AttorneyWindow(QMainWindow):
         # 翻訳完了シグナル（バックグラウンドスレッド→メインスレッド）
         self._defendant_translated.connect(self._on_defendant_translated)
         self._attorney_translated.connect(self._on_attorney_translated)
+        self._manual_attorney_translated.connect(self._on_manual_attorney_translated)
+        self._manual_attorney_failed.connect(self._on_manual_attorney_failed)
+        self._attorney_translation_failed.connect(self._on_attorney_translation_failed)
+        self._interpreter_stream_token_ready.connect(self._on_interpreter_stream_token)
+        self._interpreter_utterance_ready.connect(self._on_interpreter_utterance)
+        self._start_translation_worker()
 
     @property
     def defendant_panel(self) -> DefendantPanel:
@@ -1125,6 +1155,7 @@ class AttorneyWindow(QMainWindow):
         """弁護人のシグナルを埋め込みパネルにも接続"""
         self.send_to_defendant.connect(self._defendant_panel.on_message)
         self.stream_to_defendant.connect(self._defendant_panel.on_stream_token)
+        self.finish_defendant_stream.connect(self._defendant_panel.finish_stream)
         self.defendant_correction.connect(self._defendant_panel.on_correction)
         self.defendant_retry.connect(self._defendant_panel.on_retry)
         self.defendant_update_last.connect(self._defendant_panel.on_update_last)
@@ -1738,6 +1769,16 @@ class AttorneyWindow(QMainWindow):
         )
         if path:
             self._dummy_pdf_path = path
+            self.status_bar.showMessage(f"ダミーPDFを設定: {os.path.basename(path)}", 3000)
+
+    def get_hide_preferences(self) -> dict[str, object]:
+        return {
+            "wipe_log_on_hide": getattr(self, "_hide_wipe_log", None).isChecked()
+            if hasattr(self, "_hide_wipe_log") else True,
+            "wipe_recording_on_hide": getattr(self, "_hide_wipe_rec", None).isChecked()
+            if hasattr(self, "_hide_wipe_rec") else True,
+            "dummy_pdf_path": self._dummy_pdf_path,
+        }
 
     # ---- LLMモデル選択 ----
 
@@ -2165,23 +2206,122 @@ class AttorneyWindow(QMainWindow):
 
     def _setup_callbacks(self):
         def on_stream_token(utt: Utterance, token: str):
-            self.stream_to_defendant.emit(token)
-            # 弁護人ログのバブルにも翻訳をリアルタイム反映
-            if hasattr(self, '_current_attorney_bubble') and self._current_attorney_bubble:
-                self._current_attorney_bubble.update_translation(utt.translated)
+            self._interpreter_stream_token_ready.emit(utt, token)
 
         def on_utterance(utt: Utterance):
-            # 翻訳完了 — 最終テキストで更新
-            if hasattr(self, '_current_attorney_bubble') and self._current_attorney_bubble:
-                self._current_attorney_bubble.update_translation(utt.translated)
-                self._current_attorney_bubble = None
-            self._defendant_panel.finish_stream()
-            self.status_bar.showMessage("待機中")
+            self._interpreter_utterance_ready.emit(utt)
 
         self.interpreter.set_callbacks(
             on_utterance=on_utterance,
             on_stream_token=on_stream_token,
         )
+
+    @Slot(object, str)
+    def _on_interpreter_stream_token(self, utt: Utterance, token: str):
+        self.stream_to_defendant.emit(token)
+        if self._current_attorney_bubble:
+            self._current_attorney_bubble.update_translation(utt.translated)
+
+    @Slot(object)
+    def _on_interpreter_utterance(self, utt: Utterance):
+        if self._current_attorney_bubble:
+            self._current_attorney_bubble.utterance = utt
+            self._current_attorney_bubble.update_translation(utt.translated)
+            self._current_attorney_bubble = None
+        self.finish_defendant_stream.emit()
+        self.status_bar.showMessage("待機中")
+
+    def _start_translation_worker(self):
+        worker = threading.Thread(target=self._translation_worker_loop, daemon=True)
+        worker.start()
+        self._translation_worker = worker
+
+    def _next_translation_job(self, kind: str, text: str) -> TranslationJob:
+        with self._translation_state_lock:
+            self._translation_job_seq += 1
+            return TranslationJob(
+                job_id=self._translation_job_seq,
+                session_token=self._translation_session_token,
+                kind=kind,
+                text=text,
+            )
+
+    def _enqueue_translation_job(self, kind: str, text: str) -> TranslationJob:
+        job = self._next_translation_job(kind, text)
+        self._translation_queue.put(job)
+        return job
+
+    def _is_translation_job_active(self, job: TranslationJob) -> bool:
+        with self._translation_state_lock:
+            return (
+                job.session_token == self._translation_session_token
+                and job.job_id not in self._cancelled_translation_job_ids
+            )
+
+    def _cancel_translation_job(self, job_id: int):
+        with self._translation_state_lock:
+            self._cancelled_translation_job_ids.add(job_id)
+
+    def _invalidate_translation_jobs(self):
+        with self._translation_state_lock:
+            self._translation_session_token += 1
+            self._cancelled_translation_job_ids.clear()
+
+    def _translation_worker_loop(self):
+        while True:
+            job = self._translation_queue.get()
+            try:
+                if job is None:
+                    return
+                if not self._is_translation_job_active(job):
+                    continue
+
+                if job.kind in ("manual_attorney", "stt_attorney"):
+                    utt = self._translate_attorney_text(job.text)
+                    if not self._is_translation_job_active(job):
+                        continue
+                    if job.kind == "manual_attorney":
+                        self._manual_attorney_translated.emit(job.job_id, utt)
+                    else:
+                        self._attorney_translated.emit(utt)
+                elif job.kind == "defendant":
+                    try:
+                        utt = self.interpreter.translate_defendant(job.text)
+                    except Exception as e:
+                        import time as _t
+                        utt = Utterance(
+                            speaker=Speaker.DEFENDANT,
+                            original=job.text,
+                            translated=f"(翻訳エラー: {job.text})",
+                            timestamp=_t.strftime("%H:%M"),
+                        )
+                        print(f"[DEF-TRANSLATE] ERROR: {e}")
+                    if not self._is_translation_job_active(job):
+                        continue
+                    self._defendant_translated.emit(utt)
+                else:
+                    print(f"[warn] 不明な翻訳ジョブ種別: {job.kind}")
+            except Exception as e:
+                if not isinstance(job, TranslationJob) or not self._is_translation_job_active(job):
+                    continue
+                if job.kind == "manual_attorney":
+                    self._manual_attorney_failed.emit(job.job_id, str(e))
+                elif job.kind == "stt_attorney":
+                    self._attorney_translation_failed.emit(job.text, str(e))
+                elif job.kind == "defendant":
+                    import time as _t
+                    utt = Utterance(
+                        speaker=Speaker.DEFENDANT,
+                        original=job.text,
+                        translated=f"(翻訳エラー: {job.text})",
+                        timestamp=_t.strftime("%H:%M"),
+                    )
+                    self._defendant_translated.emit(utt)
+            finally:
+                if isinstance(job, TranslationJob):
+                    with self._translation_state_lock:
+                        self._cancelled_translation_job_ids.discard(job.job_id)
+                self._translation_queue.task_done()
 
     # ----- 埋め込みパネル -----
 
@@ -2244,9 +2384,67 @@ class AttorneyWindow(QMainWindow):
 
     # ----- イベントハンドラ -----
 
+    def _ensure_translation_available(self) -> bool:
+        if self.interpreter.translation_ready:
+            return True
+        if self.interpreter.model_load_state == "loading":
+            message = "⏳ 翻訳エンジン読込中 — まだ送信できません"
+        elif self.interpreter.model_load_error:
+            message = f"⚠ {self.interpreter.model_load_error}"
+        else:
+            message = "⚠ 翻訳エンジンが利用できません"
+        self.status_bar.showMessage(message, 6000)
+        return False
+
+    def _translate_attorney_text(self, text: str) -> Utterance:
+        import time as _t
+
+        utt = Utterance(
+            speaker=Speaker.ATTORNEY,
+            original=text,
+            timestamp=_t.strftime("%H:%M"),
+        )
+        tgt = self.interpreter.target_lang
+        print(f"[ATT-TRANSLATE] start: text={text[:30]}, tgt={tgt}")
+
+        processed_text, glossary_map = self.interpreter._glossary_pre_ja_to_foreign(text)
+        if glossary_map:
+            print(f"[ATT-TRANSLATE] glossary前処理: {processed_text}")
+
+        if hasattr(self.interpreter.engine, "translate_detail"):
+            from core.interpreter import detect_unknown_words
+            result = self.interpreter.engine.translate_detail(processed_text, "ja", tgt)
+            final_text = self.interpreter._glossary_post_ja_to_foreign(
+                result.final_text, glossary_map
+            )
+            marked, unknowns = detect_unknown_words(text, final_text, "ja", tgt)
+            utt.translated = marked
+            utt.intermediate_en = result.intermediate_en
+            utt.translation_route = result.route
+            utt.unknown_words = unknowns
+        else:
+            raw = self.interpreter.engine.translate(processed_text, "ja", tgt)
+            raw = self.interpreter._glossary_post_ja_to_foreign(raw, glossary_map)
+            utt.translated = raw
+
+        print(f"[ATT-TRANSLATE] done: translated={utt.translated[:50]}")
+        return utt
+
+    def _drop_pending_attorney_request(self, bubble: ConversationBubble):
+        remove_key = None
+        for request_id, pending_bubble in self._pending_attorney_bubbles.items():
+            if pending_bubble is bubble:
+                remove_key = request_id
+                break
+        if remove_key is not None:
+            self._pending_attorney_bubbles.pop(remove_key, None)
+            self._cancel_translation_job(remove_key)
+
     def _on_send_attorney(self):
         text = self.input_field.text().strip()
         if not text:
+            return
+        if not self._ensure_translation_available():
             return
         self.input_field.clear()
         self.input_field.setStyleSheet(self._input_normal_style)
@@ -2263,11 +2461,8 @@ class AttorneyWindow(QMainWindow):
         self._last_attorney_bubble = bubble
         self._scroll_to_bottom()
 
-        # ストリーミング翻訳結果をこのバブルに反映するため参照を保持
-        self._current_attorney_bubble = bubble
-
-        self.interpreter.translate_attorney(text)
-        self.send_to_defendant.emit("attorney_start", text)
+        job = self._enqueue_translation_job("manual_attorney", text)
+        self._pending_attorney_bubbles[job.job_id] = bubble
 
     # ------------------------------------------------------------------
     # 定型文テンプレート
@@ -2494,79 +2689,18 @@ class AttorneyWindow(QMainWindow):
 
     def _process_defendant_speech(self, text: str):
         """被疑者発言を非同期翻訳（メインスレッドをブロックしない）"""
-        import threading
+        if not self._ensure_translation_available():
+            return
         self.status_bar.showMessage("翻訳中...")
         self.send_to_defendant.emit("defendant_echo", text)
-
-        def _run():
-            try:
-                utt = self.interpreter.translate_defendant(text)
-                self._defendant_translated.emit(utt)
-            except Exception as e:
-                import traceback
-                print(f"[DEF-TRANSLATE] ERROR: {e}")
-                traceback.print_exc()
-                # 翻訳失敗でも原文は表示する
-                from core.interpreter import Utterance, Speaker
-                import time as _t
-                utt = Utterance(
-                    speaker=Speaker.DEFENDANT,
-                    original=text,
-                    translated=f"(翻訳エラー: {text})",
-                    timestamp=_t.strftime("%H:%M"),
-                )
-                self._defendant_translated.emit(utt)
-
-        threading.Thread(target=_run, daemon=True).start()
+        self._enqueue_translation_job("defendant", text)
 
     def _process_attorney_speech(self, text: str):
         """弁護人STT発言 → 即座に非同期翻訳 → 自動送信（修正/取消はバブル上で）"""
-        import threading
+        if not self._ensure_translation_available():
+            return
         self.status_bar.showMessage("🎤 文字起こし完了 — 翻訳中...")
-
-        def _run():
-            try:
-                import time as _t
-                utt = Utterance(
-                    speaker=Speaker.ATTORNEY,
-                    original=text,
-                    timestamp=_t.strftime("%H:%M"),
-                )
-                tgt = self.interpreter.target_lang
-                print(f"[ATT-TRANSLATE] start: text={text[:30]}, tgt={tgt}")
-
-                # グロッサリー前処理: 固有名詞をマーカーに置換
-                processed_text, glossary_map = self.interpreter._glossary_pre_ja_to_foreign(text)
-                if glossary_map:
-                    print(f"[ATT-TRANSLATE] glossary前処理: {processed_text}")
-
-                if hasattr(self.interpreter.engine, "translate_detail"):
-                    from core.interpreter import detect_unknown_words
-                    result = self.interpreter.engine.translate_detail(processed_text, "ja", tgt)
-                    # グロッサリー後処理: マーカーを正しい固有名詞に置換
-                    final_text = self.interpreter._glossary_post_ja_to_foreign(
-                        result.final_text, glossary_map
-                    )
-                    marked, unknowns = detect_unknown_words(
-                        text, final_text, "ja", tgt,
-                    )
-                    utt.translated = marked
-                    utt.intermediate_en = result.intermediate_en
-                    utt.translation_route = result.route
-                    utt.unknown_words = unknowns
-                else:
-                    raw = self.interpreter.engine.translate(processed_text, "ja", tgt)
-                    # グロッサリー後処理
-                    raw = self.interpreter._glossary_post_ja_to_foreign(raw, glossary_map)
-                    utt.translated = raw
-                print(f"[ATT-TRANSLATE] done: translated={utt.translated[:50]}")
-                self._attorney_translated.emit(utt)
-            except Exception as e:
-                import traceback
-                print(f"[ATT-TRANSLATE] ERROR: {e}")
-                traceback.print_exc()
-
-        threading.Thread(target=_run, daemon=True).start()
+        self._enqueue_translation_job("stt_attorney", text)
 
     def _on_attorney_translated(self, utt):
         """弁護人翻訳完了 → 即座に送信＋ログにバブル追加（修正/取消ボタン付き）"""
@@ -2584,12 +2718,57 @@ class AttorneyWindow(QMainWindow):
         # 被疑者画面に即座に送信
         self.send_to_defendant.emit("attorney_start", utt.original)
         self.stream_to_defendant.emit(utt.translated)
-        self._defendant_panel.finish_stream()
+        self.finish_defendant_stream.emit()
         self.status_bar.showMessage("送信済み — バブル上で修正/取消可能")
+
+    @Slot(int, object)
+    def _on_manual_attorney_translated(self, request_id: int, utt: Utterance):
+        bubble = self._pending_attorney_bubbles.pop(request_id, None)
+        if not bubble:
+            return
+        utt.confirmed = True
+        self.interpreter.conversation.append(utt)
+        bubble.utterance = utt
+        bubble.update_translation(utt.translated)
+        self._last_attorney_bubble = bubble
+        self._scroll_to_bottom()
+
+        self.send_to_defendant.emit("attorney_start", utt.original)
+        self.stream_to_defendant.emit(utt.translated)
+        self.finish_defendant_stream.emit()
+        self.status_bar.showMessage("送信済み — バブル上で修正/取消可能")
+
+    @Slot(int, str)
+    def _on_manual_attorney_failed(self, request_id: int, message: str):
+        bubble = self._pending_attorney_bubbles.pop(request_id, None)
+        if not bubble:
+            return
+        bubble.utterance.translated = f"(翻訳エラー: {message})"
+        bubble.update_translation(bubble.utterance.translated)
+        self.status_bar.showMessage(f"翻訳エラー: {message}", 7000)
+
+    @Slot(str, str)
+    def _on_attorney_translation_failed(self, text: str, message: str):
+        import time as _t
+
+        utt = Utterance(
+            speaker=Speaker.ATTORNEY,
+            original=text,
+            translated=f"(翻訳エラー: {message})",
+            timestamp=_t.strftime("%H:%M"),
+        )
+        bubble = ConversationBubble(utt, show_actions=True)
+        bubble.edit_clicked.connect(self._on_bubble_edit)
+        bubble.cancel_clicked.connect(self._on_bubble_cancel)
+        self.log_layout.addWidget(bubble)
+        self._last_attorney_bubble = bubble
+        self._scroll_to_bottom()
+        self.status_bar.showMessage(f"翻訳エラー: {message}", 7000)
 
     def _on_bubble_edit(self, bubble):
         """バブル上の「修正」ボタン → 文字起こしを入力欄に戻して再翻訳可能にする"""
         utt = bubble.utterance
+        self._drop_pending_attorney_request(bubble)
         # 会話履歴から除去
         if utt in self.interpreter.conversation:
             self.interpreter.conversation.remove(utt)
@@ -2609,6 +2788,7 @@ class AttorneyWindow(QMainWindow):
     def _on_bubble_cancel(self, bubble):
         """バブル上の「取消」ボタン → バブルと会話履歴を除去"""
         utt = bubble.utterance
+        self._drop_pending_attorney_request(bubble)
         # 会話履歴から除去
         if utt in self.interpreter.conversation:
             self.interpreter.conversation.remove(utt)
@@ -2695,7 +2875,7 @@ class AttorneyWindow(QMainWindow):
                 # 被疑者画面に翻訳テキストを表示
                 self.send_to_defendant.emit("attorney_start", utt.original)
                 self.stream_to_defendant.emit(utt.translated)
-                self._defendant_panel.finish_stream()
+                self.finish_defendant_stream.emit()
             else:
                 # 被疑者: 従来通り
                 self.interpreter.confirm_utterance(utt)
@@ -2709,10 +2889,11 @@ class AttorneyWindow(QMainWindow):
             self.status_bar.showMessage("待機中")
 
     def _on_retry(self):
+        was_attorney = self._pending_is_attorney
         self._pending_utterance = None
         self._pending_is_attorney = False
         self.approval_frame.setVisible(False)
-        if not self._pending_is_attorney:
+        if not was_attorney:
             self.defendant_retry.emit()
         self.status_bar.showMessage("再発話待ち")
 
@@ -2859,27 +3040,29 @@ class AttorneyWindow(QMainWindow):
     def _on_end_session(self):
         self.interpreter.clear_conversation()
         self.recorder.wipe()
-        while self.log_layout.count():
-            item = self.log_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        self.clear_defendant.emit()
+        self.clear_logs()
         self._session_count += 1
         if self._session_label:
             self._session_label.setText(f"Session #{self._session_count:02d}")
         self.status_bar.showMessage("新セッション")
 
-    def set_loading_state(self, loading: bool):
+    def set_loading_state(self, loading: bool, ready: bool = True, message: str = ""):
         """モデル読み込み状態をUIに反映"""
         is_mock = self.interpreter.mock
         if loading:
             self._loading_got_real_progress = False
             self._loading_dots = 0
             if is_mock:
+                self._loading_phase = "Whisper"
                 self._loading_label.setText("⏳ Whisper読込中")
                 self._mode_label.setText("MOCK")
             else:
-                self._loading_label.setText("⏳ LLM読込中")
+                self._loading_phase = {
+                    EngineType.LLM: "LLM",
+                    EngineType.NLLB: "NLLB",
+                    EngineType.HYBRID: "Hybrid",
+                }.get(self.interpreter._engine_type, "LLM")
+                self._loading_label.setText(f"⏳ {self._loading_phase}読込中")
                 self._mode_label.setText("REAL")
             self.status_bar.showMessage("モデル読込中 — 音声認識は準備完了後に利用可能")
             # アニメーションタイマー（ドット循環）
@@ -2891,12 +3074,23 @@ class AttorneyWindow(QMainWindow):
             if hasattr(self, '_loading_anim_timer') and self._loading_anim_timer:
                 self._loading_anim_timer.stop()
                 self._loading_anim_timer = None
-            self._loading_label.setText("")
-            if is_mock:
-                self._mode_label.setText("MOCK ✓")
+            if ready:
+                self._loading_label.setText("")
+                if is_mock:
+                    self._mode_label.setText("MOCK ✓")
+                else:
+                    self._mode_label.setText("REAL ✓")
+                self.status_bar.showMessage("✓ モデル準備完了 — 翻訳・音声認識が利用可能", 5000)
             else:
-                self._mode_label.setText("REAL ✓")
-            self.status_bar.showMessage("✓ モデル準備完了 — 翻訳・音声認識が利用可能", 5000)
+                if self.interpreter.translation_ready and not self.interpreter.stt_ready:
+                    self._loading_label.setText("⚠ STT不可")
+                    self._mode_label.setText("MOCK !" if is_mock else "REAL !")
+                else:
+                    self._loading_label.setText("⚠ 読込失敗")
+                    self._mode_label.setText("ERROR")
+                self.status_bar.showMessage(
+                    message or "モデルの読込に失敗しました", 8000
+                )
 
     def _animate_loading(self):
         """読込中のドットアニメーション（実進捗が来るまで）"""
@@ -2910,16 +3104,21 @@ class AttorneyWindow(QMainWindow):
     def set_loading_progress(self, phase: str, progress: float):
         """モデル読み込みの進捗を更新（バックグラウンドスレッドからQTimerで呼ぶ）"""
         pct = int(progress * 100)
-        if phase == "llm":
-            self._loading_phase = "LLM"
+        phase_name = {
+            "llm": "LLM",
+            "nllb": "NLLB",
+            "hybrid": "Hybrid",
+            "stt": "Whisper",
+        }.get(phase, phase.upper())
+        self._loading_phase = phase_name
+        if phase != "stt":
             if progress > 0.0:
                 # 実進捗が来た — アニメーションから%表示に切替
                 self._loading_got_real_progress = True
-                self._loading_label.setText(f"⏳ LLM {pct}%")
-                self.status_bar.showMessage(f"LLMモデル読込中… {pct}%")
+                self._loading_label.setText(f"⏳ {phase_name} {pct}%")
+                self.status_bar.showMessage(f"{phase_name}モデル読込中… {pct}%")
             # progress == 0 はアニメーション続行（_animate_loadingに任せる）
-        elif phase == "stt":
-            self._loading_phase = "Whisper"
+        else:
             self._loading_got_real_progress = False  # Whisperはアニメに戻す
             if progress < 1.0:
                 self._loading_label.setText("⏳ Whisper読込中…")
@@ -2932,7 +3131,10 @@ class AttorneyWindow(QMainWindow):
         """⌘5: マイクON/OFF トグル"""
         # モデル未準備時はONにさせない
         if not self._stt_active and not self.interpreter._models_ready:
-            self.status_bar.showMessage("⏳ モデル読込中 — 音声認識はまだ使えません", 3000)
+            if self.interpreter.model_load_state in ("error", "degraded") and self.interpreter.model_load_error:
+                self.status_bar.showMessage(f"⚠ {self.interpreter.model_load_error}", 6000)
+            else:
+                self.status_bar.showMessage("⏳ モデル読込中 — 音声認識はまだ使えません", 3000)
             return
 
         self._stt_active = not self._stt_active
@@ -3255,10 +3457,23 @@ class AttorneyWindow(QMainWindow):
         self.raise_()
         self.activateWindow()
 
-    def wipe_all(self):
-        self.interpreter.clear_conversation()
-        self.recorder.wipe()
+    def clear_logs(self):
+        self._invalidate_translation_jobs()
+        self._pending_utterance = None
+        self._pending_is_attorney = False
+        self._current_attorney_bubble = None
+        self._pending_attorney_bubbles.clear()
+        self._last_attorney_bubble = None
+        self._last_defendant_bubble = None
+        self._editing_def_bubble = None
+        self.approval_frame.setVisible(False)
         while self.log_layout.count():
             item = self.log_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
+        self.clear_defendant.emit()
+
+    def wipe_all(self, delete_saved_recordings: bool = False):
+        self.interpreter.clear_conversation()
+        self.recorder.wipe(delete_saved_files=delete_saved_recordings)
+        self.clear_logs()

@@ -433,7 +433,7 @@ class DefendantPanel(QWidget):
         if self._current_stream_entry:
             self._current_stream_entry.finish_stream()
             self._current_stream_entry = None
-            self.status_label.setText("Ready")
+            self.status_label.setText(_get_msg(self._lang, "ready"))
 
     @Slot()
     def on_correction(self):
@@ -482,7 +482,7 @@ class DefendantPanel(QWidget):
 
     @Slot()
     def on_clear(self):
-        self._status_banner = None
+        self._remove_status_banner()
         while self.log_layout.count():
             item = self.log_layout.takeAt(0)
             if item.widget():

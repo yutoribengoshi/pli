@@ -137,6 +137,7 @@ class PLIApp:
 
         # ストリーミング（タイプライター）
         self.attorney.stream_to_defendant.connect(self.defendant.on_stream_token)
+        self.attorney.finish_defendant_stream.connect(self.defendant.finish_stream)
 
         # 手動修正中表示
         self.attorney.defendant_correction.connect(self.defendant.on_correction)
@@ -174,11 +175,19 @@ class PLIApp:
 
     def _toggle_hide(self):
         """F1 トグル"""
+        self._sync_hide_settings_from_ui()
         self.hide_mode.toggle_hide()
 
     def _do_panic(self):
         """F2 パニック"""
+        self._sync_hide_settings_from_ui()
         self.hide_mode.panic()
+
+    def _sync_hide_settings_from_ui(self):
+        prefs = self.attorney.get_hide_preferences()
+        self.hide_mode.settings.wipe_log_on_hide = bool(prefs["wipe_log_on_hide"])
+        self.hide_mode.settings.wipe_recording_on_hide = bool(prefs["wipe_recording_on_hide"])
+        self.hide_mode.settings.dummy_pdf_path = str(prefs["dummy_pdf_path"])
 
     def _on_stt_toggled(self, active: bool):
         """⌘5: STTリスナーのON/OFF"""
@@ -204,8 +213,9 @@ class PLIApp:
 
         if settings.wipe_log_on_hide:
             self.interpreter.clear_conversation()
+            self.attorney.clear_logs()
         if settings.wipe_recording_on_hide:
-            self.recorder.wipe()
+            self.recorder.wipe(delete_saved_files=True)
 
         self.interpreter.pause()
 
@@ -227,11 +237,7 @@ class PLIApp:
         self.attorney.do_hide()
         self.defendant.do_hide()
 
-        self.attorney.wipe_all()
-        self.interpreter.clear_conversation()
-        self.recorder.wipe()
-
-        self.defendant.on_clear()
+        self.attorney.wipe_all(delete_saved_recordings=True)
         self.interpreter.pause()
 
     def _on_llm_model_changed(self, model_path: str):
@@ -299,14 +305,16 @@ class PLIApp:
         print("[info] 設定変更のためアプリを再起動します...")
         import subprocess
         model_path = model_path or self.interpreter._model_path or ""
-        n_ctx = n_ctx or self._n_ctx
-        args = [sys.executable, os.path.abspath(__file__), "--real",
+        n_ctx = self._n_ctx if n_ctx is None else n_ctx
+        args = [sys.executable, os.path.abspath(__file__),
                 "--display", self._display_mode,
                 "--engine", self._engine_type_str]
-        if self._engine_type_str in ("nllb", "hybrid"):
+        if not self.interpreter.mock:
+            args.append("--real")
+        if not self.interpreter.mock and self._engine_type_str in ("nllb", "hybrid"):
             if self._nllb_model_dir:
                 args += ["--nllb-dir", self._nllb_model_dir]
-        if self._engine_type_str in ("llm",):
+        if not self.interpreter.mock and self._engine_type_str in ("llm",):
             args += ["--model", model_path, "--n-ctx", str(n_ctx)]
         subprocess.Popen(args)
         self.app.quit()
@@ -402,10 +410,15 @@ class PLIApp:
         # スレッド間通信用の共有状態
         self._loading_done = False
         self._loading_progress = ("llm", 0.0)
+        self._loading_ready = False
+        self._loading_message = ""
 
-        def on_ready():
+        def on_ready(ready: bool, message: str):
             print("[info] on_ready コールバック発火")
-            self.stt_listener.stt = self.interpreter.stt
+            if self.interpreter.stt_ready:
+                self.stt_listener.stt = self.interpreter.stt
+            self._loading_ready = ready
+            self._loading_message = message
             self._loading_done = True  # フラグでメインスレッドに通知
             self._loading_is_mock = self.interpreter.mock  # モック時はラベル変更しない
 
@@ -422,7 +435,11 @@ class PLIApp:
             if self._loading_done:
                 self._model_poll_timer.stop()
                 self._model_poll_timer = None
-                self.attorney.set_loading_state(False)
+                self.attorney.set_loading_state(
+                    False,
+                    ready=self._loading_ready,
+                    message=self._loading_message,
+                )
                 print("[info] set_loading_state(False) 実行")
         self._model_poll_timer.timeout.connect(_check_loading)
         self._model_poll_timer.start(200)
@@ -445,7 +462,7 @@ def main():
                         help="表示モード: auto(自動), dual(2画面), unified(左右分割), switch(全画面切替)")
     args = parser.parse_args()
 
-    mock = False  # 常にリアルモード
+    mock = not args.real
     model_path = args.model
     n_ctx = args.n_ctx
     engine_type = args.engine
