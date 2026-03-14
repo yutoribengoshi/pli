@@ -1,0 +1,32 @@
+# ── PLI Windows 用依存関係 ──
+# macOS 専用の mlx-whisper を faster-whisper に置き換え
+
+# ── GUI ──
+PySide6>=6.6
+
+# ── Speech-to-Text (Windows: NVIDIA GPU / CPU) ──
+faster-whisper>=1.0.0            # CTranslate2ベースWhisper (CUDA/CPU対応)
+# mlx-whisper は macOS (Apple Silicon) 専用のため除外
+
+# ── Translation Engines ──
+transformers>=4.38.0             # HuggingFace OPUS-MT / NLLB tokenizers & models
+ctranslate2>=4.0.0               # CTranslate2 optimized inference
+sentencepiece>=0.2.0             # Tokenizer for NLLB
+# llama-cpp-python>=0.2.0       # LLM engine (optional, large models)
+
+# ── Model Management ──
+huggingface_hub>=0.20.0          # Model downloads from HuggingFace Hub
+
+# ── Audio ──
+PyAudio>=0.2.14                  # Microphone input
+# Windows: pipでインストール失敗する場合は以下を参照
+#   pip install pipwin && pipwin install pyaudio
+# または公式ビルド済みホイール:
+#   https://www.lfd.uci.edu/~gohlke/pythonlibs/#pyaudio
+
+# ── Document Export ──
+python-docx>=1.0.0               # Word document generation
+
+# ── Build (dev) ──
+# pyinstaller>=6.0               # Windows .exe packaging
+# Pillow>=10.0                   # Icon generation
