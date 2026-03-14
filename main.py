@@ -46,7 +46,8 @@ class PLIApp:
 
     def __init__(self, mock: bool = True, model_path: str = "",
                  display_mode: str = "auto", n_ctx: int = 2048,
-                 engine_type: str = "llm", nllb_model_dir: str = ""):
+                 engine_type: str = "llm", nllb_model_dir: str = "",
+                 whisper_model: str = ""):
         self.app = QApplication(sys.argv)
         self.app.setApplicationName("PLI")
         self.app.setStyle("Fusion")
@@ -70,6 +71,7 @@ class PLIApp:
         self.interpreter = Interpreter(
             mock=mock, model_path=model_path, n_ctx=n_ctx,
             engine_type=etype, nllb_model_dir=nllb_model_dir,
+            whisper_model=whisper_model,
         )
         self.recorder = Recorder()
         self.hide_mode = HideMode(HideSettings(
@@ -469,6 +471,8 @@ def main():
     parser.add_argument("--display", type=str, default="auto",
                         choices=["auto", "dual", "unified", "switch"],
                         help="表示モード: auto(自動), dual(2画面), unified(左右分割), switch(全画面切替)")
+    parser.add_argument("--whisper", type=str, default="",
+                        help="Whisperモデルサイズ: tiny, base, small, medium, large-v3-turbo, large-v3")
     args = parser.parse_args()
 
     mock = not args.real
@@ -591,7 +595,8 @@ def main():
                 print(f"[info] コンテキスト長を自動設定: {n_ctx}")
 
     app = PLIApp(mock=mock, model_path=model_path, display_mode=args.display,
-                 n_ctx=n_ctx, engine_type=engine_type, nllb_model_dir=nllb_model_dir)
+                 n_ctx=n_ctx, engine_type=engine_type, nllb_model_dir=nllb_model_dir,
+                 whisper_model=args.whisper)
     sys.exit(app.run())
 
 

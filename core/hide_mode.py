@@ -89,6 +89,8 @@ class HideMode:
 
     def _hide_from_dock(self):
         """DockとCmd+Tabからアプリを除外"""
+        if sys.platform != "darwin":
+            return  # Windows では Qt 側で制御
         try:
             self._set_process_visibility(False)
         except Exception:
@@ -96,6 +98,8 @@ class HideMode:
 
     def _show_in_dock(self):
         """Dockにアプリを復帰"""
+        if sys.platform != "darwin":
+            return  # Windows では Qt 側で制御
         try:
             self._set_process_visibility(True)
         except Exception:
@@ -144,6 +148,15 @@ class HideMode:
 
     def _show_dummy(self):
         """ダミーアプリを前面に表示"""
+        if sys.platform != "darwin":
+            # Windows: エクスプローラーを前面に表示
+            try:
+                subprocess.Popen(["explorer.exe", os.path.expanduser("~")])
+                self._dummy_mode = "explorer"
+            except Exception:
+                self._dummy_mode = ""
+            return
+
         pdf_path = self.settings.dummy_pdf_path
         if pdf_path and os.path.exists(pdf_path):
             try:

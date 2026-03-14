@@ -75,38 +75,31 @@ class Recorder:
     def _close_audio_handles(self):
         if self._stream:
             try:
-                self._stream.stop_stream()
+                self._stream.stop()
                 self._stream.close()
             except Exception:
                 pass
             self._stream = None
-        if self._audio:
-            try:
-                self._audio.terminate()
-            except Exception:
-                pass
-            self._audio = None
+        self._audio = None
 
     def _record_loop(self):
-        """PyAudioによる録音ループ"""
+        """sounddeviceによる録音ループ"""
         try:
-            import pyaudio
-            self._audio = pyaudio.PyAudio()
-            self._stream = self._audio.open(
-                format=pyaudio.paInt16,
+            import sounddevice as sd
+            self._stream = sd.RawInputStream(
+                samplerate=self._sample_rate,
                 channels=self._channels,
-                rate=self._sample_rate,
-                input=True,
-                frames_per_buffer=1024,
+                dtype='int16',
+                blocksize=1024,
             )
+            self._stream.start()
             while self._recording:
-                data = self._stream.read(1024, exception_on_overflow=False)
+                data, overflowed = self._stream.read(1024)
                 with self._buffer_lock:
-                    self._buffer.write(data)
+                    self._buffer.write(bytes(data))
         except ImportError:
-            # PyAudio未インストール時はダミー録音
+            # sounddevice未インストール時はダミー録音
             while self._recording:
-                # 無音データを生成
                 silence = b'\x00\x00' * 1024
                 with self._buffer_lock:
                     self._buffer.write(silence)

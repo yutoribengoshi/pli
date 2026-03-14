@@ -119,24 +119,16 @@ class STTListener:
     def calibrate_threshold(self, duration: float = 1.0):
         """環境ノイズからエネルギー閾値を自動調整"""
         try:
-            import pyaudio
-            pa = pyaudio.PyAudio()
-            stream = pa.open(
-                format=pyaudio.paInt16,
-                channels=self._channels,
-                rate=self._sample_rate,
-                input=True,
-                frames_per_buffer=self._chunk_size,
-            )
+            import sounddevice as sd
+            import numpy as np
             energies = []
             chunks = int(self._sample_rate / self._chunk_size * duration)
             for _ in range(chunks):
-                data = stream.read(self._chunk_size, exception_on_overflow=False)
-                energy = self._calc_energy(data)
+                data = sd.rec(self._chunk_size, samplerate=self._sample_rate,
+                              channels=self._channels, dtype='int16')
+                sd.wait()
+                energy = self._calc_energy(data.tobytes())
                 energies.append(energy)
-            stream.stop_stream()
-            stream.close()
-            pa.terminate()
 
             if energies:
                 avg = sum(energies) / len(energies)
@@ -182,23 +174,21 @@ class STTListener:
     def _listen_loop(self):
         """メインリスニングループ"""
         try:
-            import pyaudio
+            import sounddevice as sd
         except ImportError:
             if self.on_error:
-                self.on_error("PyAudioが必要です: pip install pyaudio")
+                self.on_error("sounddeviceが必要です: pip install sounddevice")
             return
 
-        pa = pyaudio.PyAudio()
         try:
-            stream = pa.open(
-                format=pyaudio.paInt16,
+            stream = sd.RawInputStream(
+                samplerate=self._sample_rate,
                 channels=self._channels,
-                rate=self._sample_rate,
-                input=True,
-                frames_per_buffer=self._chunk_size,
+                dtype='int16',
+                blocksize=self._chunk_size,
             )
+            stream.start()
         except Exception as e:
-            pa.terminate()
             if self.on_error:
                 self.on_error(f"マイクを開けません: {e}")
             return
@@ -210,8 +200,8 @@ class STTListener:
             for _ in range(cal_chunks):
                 if not self._running:
                     break
-                data = stream.read(self._chunk_size, exception_on_overflow=False)
-                energies.append(self._calc_energy(data))
+                data, overflowed = stream.read(self._chunk_size)
+                energies.append(self._calc_energy(bytes(data)))
             if energies:
                 avg = sum(energies) / len(energies)
                 self._ambient_energy = avg
@@ -232,7 +222,8 @@ class STTListener:
 
         while self._running:
             try:
-                data = stream.read(self._chunk_size, exception_on_overflow=False)
+                data, overflowed = stream.read(self._chunk_size)
+                data = bytes(data)
             except Exception:
                 continue
 
@@ -280,11 +271,10 @@ class STTListener:
 
         # クリーンアップ
         try:
-            stream.stop_stream()
+            stream.stop()
             stream.close()
         except Exception:
             pass
-        pa.terminate()
 
     def _process_speech(self, audio_chunks: list[bytes]):
         """音声バッファをWhisperで処理"""

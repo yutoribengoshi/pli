@@ -1305,25 +1305,52 @@ class MockSTT:
 
 
 class WhisperSTT:
-    """mlx-whisper ベースの実STT（Apple Silicon GPU加速）
+    """STTエンジン — プラットフォームに応じて自動選択
 
-    faster-whisper (CPU): ~5秒/2秒音声
-    mlx-whisper (Metal GPU): ~0.5秒/2秒音声 → 10倍速
+    macOS (Apple Silicon): mlx-whisper (Metal GPU加速) ~0.5秒/2秒音声
+    Windows/Linux: faster-whisper (CUDA/CPU) ~5秒/2秒音声
     """
 
-    def __init__(self):
-        import mlx_whisper
-        self._mlx_whisper = mlx_whisper
-        self._repo = "mlx-community/whisper-turbo"
+    def __init__(self, whisper_model: str = ""):
+        import sys
+        if sys.platform == "darwin":
+            # macOS: mlx-whisper (Apple Silicon GPU加速)
+            import mlx_whisper
+            self._backend = "mlx"
+            self._mlx_whisper = mlx_whisper
+            self._repo = "mlx-community/whisper-turbo"
+        else:
+            # Windows/Linux: faster-whisper (CUDA優先、失敗時CPUフォールバック)
+            from faster_whisper import WhisperModel
+            self._backend = "faster"
+            model_name = whisper_model or "small"
+            print(f"[info] Whisperモデル: {model_name}")
+            try:
+                self._model = WhisperModel(
+                    model_name,
+                    device="cuda",
+                    compute_type="float16",
+                )
+            except Exception:
+                self._model = WhisperModel(
+                    model_name,
+                    device="cpu",
+                    compute_type="int8",
+                )
 
     def transcribe(self, audio_path: str) -> tuple[str, str]:
-        result = self._mlx_whisper.transcribe(
-            audio_path,
-            path_or_hf_repo=self._repo,
-        )
-        text = result.get("text", "")
-        lang = result.get("language", "ja")
-        return text.strip(), lang
+        if self._backend == "mlx":
+            result = self._mlx_whisper.transcribe(
+                audio_path,
+                path_or_hf_repo=self._repo,
+            )
+            text = result.get("text", "")
+            lang = result.get("language", "ja")
+            return text.strip(), lang
+        else:
+            segments, info = self._model.transcribe(audio_path)
+            text = "".join(seg.text for seg in segments)
+            return text.strip(), info.language
 
 
 # ---------------------------------------------------------------------------
@@ -1336,13 +1363,15 @@ class Interpreter:
     def __init__(self, mock: bool = True, model_path: str = "",
                  n_ctx: int = 2048,
                  engine_type: EngineType = EngineType.MOCK,
-                 nllb_model_dir: str = ""):
+                 nllb_model_dir: str = "",
+                 whisper_model: str = ""):
         self.mock = mock
         self.target_lang = "en"  # デフォルト: 英語
         self._model_path = model_path
         self._n_ctx = n_ctx
         self._engine_type = engine_type
         self._nllb_model_dir = nllb_model_dir
+        self._whisper_model = whisper_model
         self._models_ready = False  # load_models_async完了後にTrue
         self._on_models_ready: Optional[Callable] = None
         self._translation_ready = bool(mock)
@@ -1411,7 +1440,7 @@ class Interpreter:
                 message = ""
                 try:
                     print("[info] モックモード: Whisper STTをロード中...")
-                    self.stt = WhisperSTT()
+                    self.stt = WhisperSTT(whisper_model=self._whisper_model)
                     self._stt_ready = True
                     print("[info] Whisper STTのロード完了")
                 except Exception as e:

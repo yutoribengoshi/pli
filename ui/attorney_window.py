@@ -1315,7 +1315,7 @@ class AttorneyWindow(QMainWindow):
                 font-size: 11px; padding: 2px 10px;
                 border: 1px solid {_RAISED_D}; border-radius: 3px;
             }}
-            QPushButton:hover {{ background-color: {_RAISED}; color: {_TEXT}; }}
+            QPushButton:hover {{ background-color: {_RAISED_L}; color: {_TEXT}; }}
         """)
         copy_all_btn.clicked.connect(self._copy_all_conversation)
         log_toolbar.addWidget(copy_all_btn)
