@@ -235,12 +235,14 @@ class ConversationBubble(QFrame):
         self.setStyleSheet("background: transparent; border: none;")
 
     def contextMenuEvent(self, event):
-        """右クリック → バブル全体（原文＋訳文）をまとめてコピー"""
+        """右クリック → コピーメニュー"""
         from PySide6.QtWidgets import QMenu, QApplication
         menu = QMenu(self)
         copy_all = menu.addAction("📋 原文＋訳文をコピー")
         copy_orig = menu.addAction("原文のみコピー")
         copy_trans = menu.addAction("訳文のみコピー")
+        menu.addSeparator()
+        copy_conv = menu.addAction("📋 全会話コピー")
         action = menu.exec(event.globalPos())
         u = self.utterance
         if action == copy_all:
@@ -254,6 +256,11 @@ class ConversationBubble(QFrame):
             QApplication.clipboard().setText(u.original or "")
         elif action == copy_trans:
             QApplication.clipboard().setText(u.translated or "")
+        elif action == copy_conv:
+            # 親ウィンドウの全会話コピーを呼ぶ
+            window = self.window()
+            if hasattr(window, '_copy_all_conversation'):
+                window._copy_all_conversation()
 
     def hide_actions(self):
         """修正/取消ボタンを非表示にする（次の発言が来たとき）"""
@@ -921,13 +928,14 @@ class GlossaryEditorDialog(QDialog):
 # ---------------------------------------------------------------------------
 
 class DictionaryDialog(QDialog):
-    """翻訳エンジンを辞書として使う検索ダイアログ"""
+    """法律用語辞書 + 翻訳エンジンのフォールバック検索ダイアログ"""
 
     _result_ready = Signal(str)
 
     def __init__(self, interpreter, parent=None):
         super().__init__(parent)
         self.interpreter = interpreter
+        self._legal_dict = self._load_legal_dict()
         self.setWindowTitle("📖 辞書検索")
         self.setMinimumSize(420, 340)
         self.setStyleSheet(f"""
@@ -1021,23 +1029,77 @@ class DictionaryDialog(QDialog):
         btn_row.addWidget(close_btn)
         layout.addLayout(btn_row)
 
+    @staticmethod
+    def _load_legal_dict() -> list[dict]:
+        """法律用語辞書を読み込む"""
+        import json
+        paths = [
+            os.path.expanduser("~/pli-models/legal_dict.json"),
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "legal_dict.json"),
+        ]
+        for p in paths:
+            if os.path.exists(p):
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    return data.get("entries", [])
+                except Exception:
+                    continue
+        return []
+
+    def _search_dict(self, query: str, ja_to_foreign: bool) -> list[dict]:
+        """辞書から部分一致で検索。結果は [{ja, en, category}, ...]"""
+        results = []
+        q = query.lower().strip()
+        for entry in self._legal_dict:
+            if ja_to_foreign:
+                if q in entry.get("ja", ""):
+                    results.append(entry)
+            else:
+                if q in entry.get("en", "").lower():
+                    results.append(entry)
+        return results
+
     def _on_search(self):
         query = self._search_field.text().strip()
         if not query:
             return
         tgt = self.interpreter.target_lang
-        if self._rb_ja_foreign.isChecked():
+        ja_to_foreign = self._rb_ja_foreign.isChecked()
+        if ja_to_foreign:
             src, dst = "ja", tgt
             direction = f"日→{tgt}"
         else:
             src, dst = tgt, "ja"
             direction = f"{tgt}→日"
 
+        # 1. まず法律用語辞書から検索
+        dict_hits = self._search_dict(query, ja_to_foreign)
+        if dict_hits:
+            for hit in dict_hits[:10]:  # 最大10件
+                cat = hit.get("category", "")
+                cat_tag = f" <span style='color:#8899aa;'>[{cat}]</span>" if cat else ""
+                if ja_to_foreign:
+                    self._result_area.append(
+                        f"<b>[{direction}]</b> {hit['ja']}{cat_tag}<br>"
+                        f"  → <b>{hit['en']}</b>"
+                    )
+                else:
+                    self._result_area.append(
+                        f"<b>[{direction}]</b> {hit['en']}{cat_tag}<br>"
+                        f"  → <b>{hit['ja']}</b>"
+                    )
+            # カーソルを末尾に
+            cursor = self._result_area.textCursor()
+            cursor.movePosition(cursor.MoveOperation.End)
+            self._result_area.setTextCursor(cursor)
+            return
+
+        # 2. 辞書にない場合は翻訳エンジンにフォールバック
         self._result_area.append(f"<b>[{direction}]</b> {query}")
-        self._result_area.append("  翻訳中...")
+        self._result_area.append("  <span style='color:#8899aa;'>辞書に該当なし — 翻訳エンジンで検索中...</span>")
         self._result_area.repaint()
 
-        # Signal 接続（毎回再接続しても問題ない — lambda で閉包）
         try:
             self._result_ready.disconnect()
         except RuntimeError:
@@ -1057,11 +1119,12 @@ class DictionaryDialog(QDialog):
 
     @Slot(str)
     def _show_result(self, result: str):
-        # 「翻訳中...」行を置換
         html = self._result_area.toHtml()
-        html = html.replace("  翻訳中...", f"  → <b>{result}</b>")
+        html = html.replace(
+            "辞書に該当なし — 翻訳エンジンで検索中...",
+            f"辞書に該当なし — 翻訳エンジン: <b>{result}</b>"
+        )
         self._result_area.setHtml(html)
-        # カーソルを末尾に
         cursor = self._result_area.textCursor()
         cursor.movePosition(cursor.MoveOperation.End)
         self._result_area.setTextCursor(cursor)
@@ -1236,6 +1299,24 @@ class AttorneyWindow(QMainWindow):
         )
         log_inner = QVBoxLayout(log_frame)
         log_inner.setContentsMargins(0, 0, 0, 0)
+
+        # ログ上部ツールバー（全コピーボタン）
+        log_toolbar = QHBoxLayout()
+        log_toolbar.setContentsMargins(8, 2, 8, 0)
+        log_toolbar.addStretch()
+        copy_all_btn = QPushButton("📋 全会話コピー")
+        copy_all_btn.setToolTip("会話ログ全体をクリップボードにコピー")
+        copy_all_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {_SURFACE}; color: {_DIM};
+                font-size: 11px; padding: 2px 10px;
+                border: 1px solid {_RAISED_D}; border-radius: 3px;
+            }}
+            QPushButton:hover {{ background-color: {_RAISED}; color: {_TEXT}; }}
+        """)
+        copy_all_btn.clicked.connect(self._copy_all_conversation)
+        log_toolbar.addWidget(copy_all_btn)
+        log_inner.addLayout(log_toolbar)
 
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
@@ -3297,6 +3378,28 @@ class AttorneyWindow(QMainWindow):
         # レイアウト更新後にスクロール（2段階で確実に）
         QTimer.singleShot(50, _do_scroll)
         QTimer.singleShot(200, _do_scroll)
+
+    def _copy_all_conversation(self):
+        """会話ログ全体をクリップボードにコピー"""
+        from PySide6.QtWidgets import QApplication
+        lines = []
+        for i in range(self.log_layout.count()):
+            widget = self.log_layout.itemAt(i).widget()
+            if not isinstance(widget, ConversationBubble):
+                continue
+            u = widget.utterance
+            tag = "弁護人" if u.speaker == Speaker.ATTORNEY else "相手"
+            lines.append(f"[{u.timestamp}] {tag}: {u.original}")
+            if u.intermediate_en:
+                lines.append(f"  (EN) {u.intermediate_en}")
+            if u.translated:
+                lines.append(f"  → {u.translated}")
+            lines.append("")
+        if lines:
+            QApplication.clipboard().setText("\n".join(lines))
+            self.status_bar.showMessage("📋 全会話をコピーしました", 3000)
+        else:
+            self.status_bar.showMessage("コピーする会話がありません", 3000)
 
     def _show_shortcut_help(self):
         """ショートカット一覧ダイアログ"""
