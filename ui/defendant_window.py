@@ -3,6 +3,9 @@ PLI Defendant Display - 被疑者側ディスプレイ（表示専用）
 平成初期レトロUI — クリーム地に紺と緑、一太郎的な佇まい
 13インチポータブルモニター向け
 
+Copyright (c) 2025-2026 中野通り法律事務所 弁護士 関智之 (Tomoyuki Seki)
+All rights reserved.
+
 DefendantPanel(QWidget) — 表示ロジック本体（埋め込み可）
 DefendantWindow(QMainWindow) — スタンドアロンウィンドウ（Panelのラッパー）
 """

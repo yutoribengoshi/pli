@@ -2,6 +2,9 @@
 PLI STT Listener - リアルタイム音声認識
 マイク入力 → VAD（音声区間検出）→ Whisper STT → コールバック
 
+Copyright (c) 2025-2026 中野通り法律事務所 弁護士 関智之 (Tomoyuki Seki)
+All rights reserved.
+
 使い方:
     listener = STTListener(stt_engine)
     listener.on_result = lambda text, lang: print(f"[{lang}] {text}")

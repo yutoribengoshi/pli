@@ -180,7 +180,7 @@ app = BUNDLE(
         'CFBundleVersion': APP_VERSION,
         'CFBundleShortVersionString': APP_VERSION,
         'NSMicrophoneUsageDescription': 'PLI needs microphone access for real-time speech-to-text interpretation.',
-        'NSHumanReadableCopyright': 'Copyright 2025 Tomoyuki Seki. All rights reserved.',
+        'NSHumanReadableCopyright': 'Copyright 2025-2026 中野通り法律事務所 弁護士 関智之 (Tomoyuki Seki). All rights reserved.',
         'LSMinimumSystemVersion': '12.0',
         'NSHighResolutionCapable': True,
         'LSApplicationCategoryType': 'public.app-category.productivity',

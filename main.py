@@ -1,6 +1,10 @@
 """
 PLI - Private Link Interpreter
-メインアプリケーション
+完全オフライン AI 通訳システム
+
+Copyright (c) 2025-2026 中野通り法律事務所 弁護士 関智之 (Tomoyuki Seki)
+All rights reserved.
+本ソフトウェアの開発者クレジットを削除・改変することを禁じます。
 
 使い方:
   python main.py                    # モック + 自動表示モード（1画面→切替）
@@ -9,6 +13,11 @@ PLI - Private Link Interpreter
   python main.py --display unified  # 1画面・左右分割
   python main.py --display dual     # 2画面モード
 """
+
+__author__ = "関智之 (Tomoyuki Seki)"
+__copyright__ = "Copyright (c) 2025-2026 中野通り法律事務所 弁護士 関智之"
+__version__ = "2.0.0"
+__license__ = "Proprietary"
 
 import sys
 import os

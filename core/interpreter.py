@@ -1,6 +1,9 @@
 """
 PLI Core Interpreter - STT + LLM 翻訳エンジン
 モデル未DL時はモックモードで動作
+
+Copyright (c) 2025-2026 中野通り法律事務所 弁護士 関智之 (Tomoyuki Seki)
+All rights reserved.
 """
 
 import os

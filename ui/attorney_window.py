@@ -2,6 +2,9 @@
 PLI Attorney Console - 弁護人コンソール画面
 平成初期レトロUI — 一太郎的な業務用ソフトの佇まい
 
+Copyright (c) 2025-2026 中野通り法律事務所 弁護士 関智之 (Tomoyuki Seki)
+All rights reserved.
+
 表示モード:
   split  — QSplitter左右分割（デュアルモニタープレビュー向け）
   switch — QStackedWidget全画面切替（F3で弁護人⇔被疑者トグル）
@@ -1737,6 +1740,10 @@ class AttorneyWindow(QMainWindow):
         shortcut_help = QAction("ショートカット一覧  ⌘/", self)
         shortcut_help.triggered.connect(self._show_shortcut_help)
         help_menu.addAction(shortcut_help)
+        help_menu.addSeparator()
+        about_action = QAction("PLI について...", self)
+        about_action.triggered.connect(self._show_about)
+        help_menu.addAction(about_action)
 
         # ----- 設定(O) -----
         settings_menu = menubar.addMenu("設定(&O)")
@@ -3400,6 +3407,27 @@ class AttorneyWindow(QMainWindow):
             self.status_bar.showMessage("📋 全会話をコピーしました", 3000)
         else:
             self.status_bar.showMessage("コピーする会話がありません", 3000)
+
+    def _show_about(self):
+        """バージョン情報・開発者クレジット"""
+        QMessageBox.about(
+            self,
+            "PLI について",
+            "<div style='text-align:center;'>"
+            "<h2 style='color:#1a3a6a;'>PLI — Private Link Interpreter</h2>"
+            "<p style='font-size:13px;'>完全オフライン AI 通訳システム</p>"
+            "<p style='font-size:13px;'>Version 2.0.0</p>"
+            "<hr>"
+            "<p style='font-size:12px; color:#666;'>開発</p>"
+            "<p style='font-size:14px; font-weight:bold; color:#1a3a6a;'>"
+            "中野通り法律事務所<br>弁護士  関  智之</p>"
+            "<hr>"
+            "<p style='font-size:10px; color:#999;'>"
+            "Copyright &copy; 2025-2026 中野通り法律事務所 弁護士 関智之<br>"
+            "All rights reserved.<br><br>"
+            "法律用語辞書: 法務省 JLT v18.0 + DEA DIR-022-18</p>"
+            "</div>"
+        )
 
     def _show_shortcut_help(self):
         """ショートカット一覧ダイアログ"""

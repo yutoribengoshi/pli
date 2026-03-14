@@ -10,7 +10,10 @@ readme = "docs/PLI_定義書_v2.0.md"
 license = {text = "Proprietary"}
 requires-python = ">=3.10"
 authors = [
-    {name = "Tomoyuki Seki"},
+    {name = "関智之 (Tomoyuki Seki)", email = "nakanodori-law@example.com"},
+]
+maintainers = [
+    {name = "中野通り法律事務所 弁護士 関智之"},
 ]
 keywords = ["interpreter", "legal", "translation", "speech-to-text"]
 
