@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pli"
+version = "2.0.0"
+description = "Private Link Interpreter — リアルタイム接見通訳支援ツール"
+readme = "docs/PLI_定義書_v2.0.md"
+license = {text = "Proprietary"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Tomoyuki Seki"},
+]
+keywords = ["interpreter", "legal", "translation", "speech-to-text"]
+
+dependencies = [
+    "PySide6>=6.6",
+    "mlx-whisper>=0.4.0",
+    "transformers>=4.38.0",
+    "ctranslate2>=4.0.0",
+    "sentencepiece>=0.2.0",
+    "huggingface_hub>=0.20.0",
+    "PyAudio>=0.2.14",
+    "python-docx>=1.0.0",
+]
+
+[project.optional-dependencies]
+llm = ["llama-cpp-python>=0.2.0"]
+dev = ["pyinstaller>=6.0", "Pillow>=10.0"]
+
+[project.scripts]
+pli = "main:main"
+
+[project.gui-scripts]
+pli-gui = "main:main"
+
+[tool.setuptools.packages.find]
+include = ["core*", "ui*"]
+
+[tool.setuptools.package-data]
+"data" = ["*.json"]
+"assets" = ["*.icns", "*.png", "*.svg"]

@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1a2744"/>
+      <stop offset="100%" stop-color="#0d1a30"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#d4a853"/>
+      <stop offset="100%" stop-color="#b8912e"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background rounded rect -->
+  <rect width="1024" height="1024" rx="180" fill="url(#bg)"/>
+
+  <!-- Outer ring -->
+  <circle cx="512" cy="480" r="340" fill="none" stroke="url(#gold)" stroke-width="12" opacity="0.3"/>
+
+  <!-- Scales of Justice (法律) -->
+  <g transform="translate(512, 340)" fill="none" stroke="url(#gold)" stroke-width="14" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Pillar -->
+    <line x1="0" y1="-80" x2="0" y2="120"/>
+    <!-- Base -->
+    <line x1="-60" y1="120" x2="60" y2="120"/>
+    <!-- Beam -->
+    <line x1="-140" y1="-60" x2="140" y2="-60"/>
+    <!-- Top -->
+    <circle cx="0" cy="-80" r="12" fill="#d4a853"/>
+    <!-- Left pan -->
+    <path d="M-140,-60 L-180,40 Q-140,80 -100,40 Z" fill="#d4a853" fill-opacity="0.25" stroke="url(#gold)" stroke-width="8"/>
+    <!-- Right pan -->
+    <path d="M140,-60 L100,40 Q140,80 180,40 Z" fill="#d4a853" fill-opacity="0.25" stroke="url(#gold)" stroke-width="8"/>
+    <!-- Chains -->
+    <line x1="-140" y1="-60" x2="-180" y2="40"/>
+    <line x1="-140" y1="-60" x2="-100" y2="40"/>
+    <line x1="140" y1="-60" x2="100" y2="40"/>
+    <line x1="140" y1="-60" x2="180" y2="40"/>
+  </g>
+
+  <!-- Speech bubbles (通訳) -->
+  <!-- Left bubble (Japanese) -->
+  <g transform="translate(250, 600)">
+    <rect x="0" y="0" width="180" height="90" rx="16" fill="#d4a853" fill-opacity="0.15" stroke="#d4a853" stroke-width="5"/>
+    <polygon points="150,90 160,120 130,90" fill="#d4a853" fill-opacity="0.15" stroke="#d4a853" stroke-width="5" stroke-linejoin="round"/>
+    <text x="90" y="58" text-anchor="middle" fill="#d4a853" font-family="serif" font-size="42" font-weight="bold">JA</text>
+  </g>
+
+  <!-- Right bubble (Foreign) -->
+  <g transform="translate(594, 600)">
+    <rect x="0" y="0" width="180" height="90" rx="16" fill="#5b8fb9" fill-opacity="0.2" stroke="#5b8fb9" stroke-width="5"/>
+    <polygon points="30,90 20,120 50,90" fill="#5b8fb9" fill-opacity="0.2" stroke="#5b8fb9" stroke-width="5" stroke-linejoin="round"/>
+    <text x="90" y="58" text-anchor="middle" fill="#7bb8d9" font-family="serif" font-size="42" font-weight="bold">EN</text>
+  </g>
+
+  <!-- Connection arrows between bubbles -->
+  <g stroke="#d4a853" stroke-width="5" fill="none" stroke-linecap="round" opacity="0.6">
+    <path d="M440,630 Q512,610 584,630"/>
+    <polygon points="580,625 594,630 580,635" fill="#d4a853"/>
+    <path d="M584,660 Q512,680 440,660"/>
+    <polygon points="444,655 430,660 444,665" fill="#d4a853"/>
+  </g>
+
+  <!-- PLI text -->
+  <text x="512" y="820" text-anchor="middle" fill="#d4a853" font-family="'Courier New', monospace" font-size="100" font-weight="bold" letter-spacing="20">PLI</text>
+
+  <!-- Subtitle -->
+  <text x="512" y="870" text-anchor="middle" fill="#7b8da0" font-family="sans-serif" font-size="32">Private Link Interpreter</text>
+</svg>

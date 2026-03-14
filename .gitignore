@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+*.spec.bak
+
+# PyInstaller
+*.manifest
+*.spec.bak
+
+# Virtual env
+.venv/
+venv/
+env/
+
+# macOS
+.DS_Store
+._*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Models (too large for git)
+*.gguf
+*.bin
+*.safetensors
+*.ct2/
+
+# Recordings
+*.wav
+*.mp3
+
+# Build artifacts
+dist/
+build/
+
+# Temp
+*.tmp
+*.log
+
+# npm (if any)
+node_modules/
+~$*
