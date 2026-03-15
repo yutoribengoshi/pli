@@ -21,7 +21,13 @@ __license__ = "Proprietary"
 
 import sys
 import os
+import io
 import argparse
+
+# Windows CP932コンソールでUnicode文字(⌘等)が出力できない問題を回避
+if sys.platform == "win32" and hasattr(sys.stdout, "buffer"):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import Qt, QTimer, QObject, Signal

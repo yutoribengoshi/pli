@@ -14,7 +14,7 @@ from typing import Callable, Optional
 
 NLLB_MODELS = {
     "nllb-3.3b-int8": {
-        "repo": "JustFrederik/nllb-200-3.3B-ct2-int8",
+        "repo": "michaelfeil/ct2fast-nllb-200-3.3B",
         "tokenizer_repo": "facebook/nllb-200-3.3B",
         "label": "NLLB-200 3.3B int8（推奨・RAM ~4GB）",
         "size_gb": 3.5,

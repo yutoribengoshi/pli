@@ -1037,13 +1037,20 @@ class HybridEngine:
             )
 
         # --- Stage 1: OPUS-MT 直接翻訳 ---
-        # ブラックリスト (en-ja=聖書モデル等) → NLLB HFにフォールバック
+        # ブラックリスト (en-ja=聖書モデル等) → NLLB CTranslate2優先、HFフォールバック
         if pair_key in self._opus_blacklist:
+            if self._nllb_engine and self._nllb_engine.is_ready:
+                try:
+                    result = self._nllb_engine.translate(text, src_lang, tgt_lang)
+                    route = f"NLLB直接 ({src_lang}→{tgt_lang})"
+                    print(f"[hybrid] {route}")
+                    return _result(result, "", route)
+                except Exception as e:
+                    print(f"[hybrid] NLLB CT2翻訳失敗、HFフォールバック: {e}")
             try:
                 result = self._translate_nllb_hf(text, src_lang, tgt_lang)
-                route = f"NLLB直接 ({src_lang}→{tgt_lang})"
+                route = f"NLLB-HF直接 ({src_lang}→{tgt_lang})"
                 print(f"[hybrid] {route}")
-                # 直接翻訳: 中間文なし（ピボット翻訳時のみ英語中間文を表示）
                 return _result(result, "", route)
             except Exception as e:
                 print(f"[hybrid] NLLB HF翻訳失敗: {e}")
@@ -1201,8 +1208,11 @@ class HybridEngine:
     def _do_opus_translate(self, src: str, tgt: str, text: str) -> str:
         """OPUS-MTで翻訳（内部用）。ブラックリストペアはNLLB HFにフォールバック"""
         pair_key = self._get_opus_pair_key(src, tgt)
-        # ブラックリストペア → NLLB HF
+        # ブラックリストペア → NLLB CT2優先、HFフォールバック
         if pair_key in self._opus_blacklist:
+            if self._nllb_engine and self._nllb_engine.is_ready:
+                raw = self._nllb_engine.translate(text, src, tgt)
+                return self._clean_output(raw)
             raw = self._translate_nllb_hf(text, src, tgt)
             return self._clean_output(raw)
         self._ensure_opus_loaded(src, tgt)
@@ -1304,15 +1314,77 @@ class MockSTT:
         return text, lang
 
 
+def detect_cpu_backend() -> str:
+    """CPUベンダーを検出して最適なバックエンドを返す
+
+    Returns:
+        "openvino" (Intel), "directml" (AMD GPU), "cuda" (NVIDIA), "cpu" (汎用)
+    """
+    import platform
+    # NVIDIA GPU チェック
+    try:
+        import ctranslate2
+        if "cuda" in ctranslate2.get_supported_compute_types("cuda"):
+            return "cuda"
+    except Exception:
+        pass
+    # CPU ベンダー検出
+    cpu_info = platform.processor().lower()
+    # Intel CPU → OpenVINO が最適
+    if "intel" in cpu_info or "genuineintel" in cpu_info:
+        try:
+            import openvino  # noqa: F401
+            return "openvino"
+        except ImportError:
+            return "cpu"
+    # AMD CPU → DirectML (AMD GPU がある場合)
+    if "amd" in cpu_info or "authenticamd" in cpu_info:
+        try:
+            import onnxruntime_directml  # noqa: F401
+            return "directml"
+        except ImportError:
+            return "cpu"
+    return "cpu"
+
+
+# 利用可能なCPUバックエンド一覧を返す
+def get_available_backends() -> list[str]:
+    """インストール済みのバックエンドを検出してリストで返す"""
+    backends = ["cpu"]  # 常に利用可能
+    try:
+        import ctranslate2
+        if "cuda" in ctranslate2.get_supported_compute_types("cuda"):
+            backends.append("cuda")
+    except Exception:
+        pass
+    try:
+        import openvino  # noqa: F401
+        backends.append("openvino")
+    except ImportError:
+        pass
+    try:
+        import onnxruntime_directml  # noqa: F401
+        backends.append("directml")
+    except ImportError:
+        pass
+    return backends
+
+
 class WhisperSTT:
-    """STTエンジン — プラットフォームに応じて自動選択
+    """STTエンジン — プラットフォーム・CPUに応じて自動選択
 
     macOS (Apple Silicon): mlx-whisper (Metal GPU加速) ~0.5秒/2秒音声
-    Windows/Linux: faster-whisper (CUDA/CPU) ~5秒/2秒音声
+    Windows/Linux: faster-whisper (CUDA/OpenVINO/CPU) ~5秒/2秒音声
     """
 
-    def __init__(self, whisper_model: str = ""):
+    def __init__(self, whisper_model: str = "", cpu_backend: str = "auto"):
+        """
+        Args:
+            whisper_model: Whisperモデル名 (tiny/base/small/medium/large-v3 等)
+            cpu_backend: "auto" / "cpu" / "cuda" / "openvino" / "directml"
+        """
         import sys
+        self._cpu_backend = cpu_backend
         if sys.platform == "darwin":
             # macOS: mlx-whisper (Apple Silicon GPU加速)
             import mlx_whisper
@@ -1320,23 +1392,44 @@ class WhisperSTT:
             self._mlx_whisper = mlx_whisper
             self._repo = "mlx-community/whisper-turbo"
         else:
-            # Windows/Linux: faster-whisper (CUDA優先、失敗時CPUフォールバック)
+            # Windows/Linux: faster-whisper
             from faster_whisper import WhisperModel
             self._backend = "faster"
-            model_name = whisper_model or "small"
-            print(f"[info] Whisperモデル: {model_name}")
-            try:
-                self._model = WhisperModel(
-                    model_name,
-                    device="cuda",
-                    compute_type="float16",
-                )
-            except Exception:
-                self._model = WhisperModel(
-                    model_name,
-                    device="cpu",
-                    compute_type="int8",
-                )
+            model_name = whisper_model or "medium"
+
+            # バックエンド自動検出
+            if cpu_backend == "auto":
+                cpu_backend = detect_cpu_backend()
+                self._cpu_backend = cpu_backend
+
+            print(f"[info] Whisperモデル: {model_name}, バックエンド: {cpu_backend}")
+
+            if cpu_backend == "cuda":
+                try:
+                    self._model = WhisperModel(
+                        model_name, device="cuda", compute_type="float16",
+                    )
+                    return
+                except Exception as e:
+                    print(f"[info] CUDA失敗、CPUにフォールバック: {e}")
+                    cpu_backend = "cpu"
+
+            if cpu_backend == "openvino":
+                try:
+                    self._model = WhisperModel(
+                        model_name, device="cpu", compute_type="int8",
+                        backend="openvino",
+                    )
+                    print("[info] OpenVINOバックエンドで起動")
+                    return
+                except Exception as e:
+                    print(f"[info] OpenVINO失敗、CPUにフォールバック: {e}")
+                    cpu_backend = "cpu"
+
+            # 汎用CPU (DirectMLはWhisperでは未サポートなのでCPUフォールバック)
+            self._model = WhisperModel(
+                model_name, device="cpu", compute_type="int8",
+            )
 
     def transcribe(self, audio_path: str) -> tuple[str, str]:
         if self._backend == "mlx":
@@ -1348,7 +1441,14 @@ class WhisperSTT:
             lang = result.get("language", "ja")
             return text.strip(), lang
         else:
-            segments, info = self._model.transcribe(audio_path)
+            segments, info = self._model.transcribe(
+                audio_path,
+                beam_size=5,
+                best_of=5,
+                temperature=0.0,
+                condition_on_previous_text=False,
+                vad_filter=True,
+            )
             text = "".join(seg.text for seg in segments)
             return text.strip(), info.language
 
@@ -1364,7 +1464,8 @@ class Interpreter:
                  n_ctx: int = 2048,
                  engine_type: EngineType = EngineType.MOCK,
                  nllb_model_dir: str = "",
-                 whisper_model: str = ""):
+                 whisper_model: str = "",
+                 cpu_backend: str = "auto"):
         self.mock = mock
         self.target_lang = "en"  # デフォルト: 英語
         self._model_path = model_path
@@ -1372,6 +1473,7 @@ class Interpreter:
         self._engine_type = engine_type
         self._nllb_model_dir = nllb_model_dir
         self._whisper_model = whisper_model
+        self._cpu_backend = cpu_backend
         self._models_ready = False  # load_models_async完了後にTrue
         self._on_models_ready: Optional[Callable] = None
         self._translation_ready = bool(mock)
@@ -1418,6 +1520,28 @@ class Interpreter:
         """現在のエンジンが構文チェックに対応しているか"""
         return not isinstance(self.engine, (NLLBEngine, HybridEngine))
 
+    def change_whisper_model(self, model_name: str,
+                             on_done: Optional[Callable[[bool, str], None]] = None):
+        """Whisperモデルをバックグラウンドで再ロード"""
+        self._whisper_model = model_name
+
+        def _reload():
+            try:
+                print(f"[info] Whisperモデル変更中: {model_name}")
+                self.stt = WhisperSTT(whisper_model=model_name,
+                                      cpu_backend=self._cpu_backend)
+                self._stt_ready = True
+                print(f"[info] Whisperモデル変更完了: {model_name}")
+                if on_done:
+                    on_done(True, "")
+            except Exception as e:
+                print(f"[error] Whisperモデル変更失敗: {e}")
+                if on_done:
+                    on_done(False, str(e))
+
+        import threading
+        threading.Thread(target=_reload, daemon=True).start()
+
     def load_models_async(self, on_ready: Optional[Callable] = None,
                           on_progress: Optional[Callable[[str, float], None]] = None):
         """GUI表示後に呼ぶ: LLM + STT をバックグラウンドでロード
@@ -1440,7 +1564,8 @@ class Interpreter:
                 message = ""
                 try:
                     print("[info] モックモード: Whisper STTをロード中...")
-                    self.stt = WhisperSTT(whisper_model=self._whisper_model)
+                    self.stt = WhisperSTT(whisper_model=self._whisper_model,
+                                          cpu_backend=self._cpu_backend)
                     self._stt_ready = True
                     print("[info] Whisper STTのロード完了")
                 except Exception as e:
@@ -1478,7 +1603,8 @@ class Interpreter:
                 if on_progress:
                     on_progress("stt", 0.0)
                 print("[info] Whisper STTをロード中...")
-                self.stt = WhisperSTT()
+                self.stt = WhisperSTT(whisper_model=self._whisper_model,
+                                      cpu_backend=self._cpu_backend)
                 self._stt_ready = True
                 if on_progress:
                     on_progress("stt", 1.0)

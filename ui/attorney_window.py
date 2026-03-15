@@ -1286,6 +1286,76 @@ class AttorneyWindow(QMainWindow):
 
         tb_layout.addStretch()
 
+        # Whisperモデル選択
+        whisper_label = QLabel("STT:")
+        whisper_label.setFont(QFont("Menlo", 9))
+        whisper_label.setStyleSheet(f"color: {_DIM}; font-size: 10px; border: none;")
+        tb_layout.addWidget(whisper_label)
+
+        self._whisper_combo = QComboBox()
+        self._whisper_combo.setFixedWidth(120)
+        self._whisper_combo.setFixedHeight(22)
+        _whisper_models = ["tiny", "base", "small", "medium", "large-v3-turbo", "large-v3"]
+        self._whisper_combo.addItems(_whisper_models)
+        # 現在のモデルを選択
+        current_whisper = self.interpreter._whisper_model or "small"
+        idx = self._whisper_combo.findText(current_whisper)
+        if idx >= 0:
+            self._whisper_combo.setCurrentIndex(idx)
+        self._whisper_combo.setStyleSheet(f"""
+            QComboBox {{
+                background-color: {_SURFACE}; color: {_TEXT};
+                font-size: 10px; padding: 1px 4px;
+                border: 1px solid {_RAISED_D}; border-radius: 2px;
+            }}
+            QComboBox::drop-down {{
+                border: none; width: 14px;
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: {_SURFACE}; color: {_TEXT};
+                font-size: 10px; border: 1px solid {_RAISED_D};
+            }}
+        """)
+        self._whisper_combo.currentTextChanged.connect(self._on_whisper_changed)
+        tb_layout.addWidget(self._whisper_combo)
+
+        # CPUバックエンド選択
+        from core.interpreter import get_available_backends
+        _backends = get_available_backends()
+        if len(_backends) > 1:  # cpu以外の選択肢がある場合のみ表示
+            backend_label = QLabel("CPU:")
+            backend_label.setFont(QFont("Menlo", 9))
+            backend_label.setStyleSheet(f"color: {_DIM}; font-size: 10px; border: none;")
+            tb_layout.addWidget(backend_label)
+
+            self._backend_combo = QComboBox()
+            self._backend_combo.setFixedWidth(90)
+            self._backend_combo.setFixedHeight(22)
+            self._backend_combo.addItem("auto")
+            self._backend_combo.addItems(_backends)
+            current_backend = getattr(self.interpreter, '_cpu_backend', 'auto')
+            idx_b = self._backend_combo.findText(current_backend)
+            if idx_b >= 0:
+                self._backend_combo.setCurrentIndex(idx_b)
+            self._backend_combo.setStyleSheet(f"""
+                QComboBox {{
+                    background-color: {_SURFACE}; color: {_TEXT};
+                    font-size: 10px; padding: 1px 4px;
+                    border: 1px solid {_RAISED_D}; border-radius: 2px;
+                }}
+                QComboBox::drop-down {{
+                    border: none; width: 14px;
+                }}
+                QComboBox QAbstractItemView {{
+                    background-color: {_SURFACE}; color: {_TEXT};
+                    font-size: 10px; border: 1px solid {_RAISED_D};
+                }}
+            """)
+            self._backend_combo.currentTextChanged.connect(self._on_backend_changed)
+            tb_layout.addWidget(self._backend_combo)
+        else:
+            self._backend_combo = None
+
         self._lang_label = QLabel("English")
         self._lang_label.setFont(QFont("Menlo", 9))
         self._lang_label.setStyleSheet(
@@ -3385,6 +3455,31 @@ class AttorneyWindow(QMainWindow):
         # レイアウト更新後にスクロール（2段階で確実に）
         QTimer.singleShot(50, _do_scroll)
         QTimer.singleShot(200, _do_scroll)
+
+    def _on_whisper_changed(self, model_name: str):
+        """Whisperモデル変更"""
+        self._whisper_combo.setEnabled(False)
+        self._loading_label.setText(f"STT切替中: {model_name}...")
+
+        def _done(ok, err):
+            # メインスレッドで実行するためQTimer使用
+            from PySide6.QtCore import QTimer
+            def _update():
+                self._whisper_combo.setEnabled(True)
+                if ok:
+                    self._loading_label.setText("")
+                else:
+                    self._loading_label.setText(f"STTエラー: {err[:30]}")
+            QTimer.singleShot(0, _update)
+
+        self.interpreter.change_whisper_model(model_name, on_done=_done)
+
+    def _on_backend_changed(self, backend: str):
+        """CPUバックエンド変更 → Whisperを再ロード"""
+        self.interpreter._cpu_backend = backend
+        # 現在のWhisperモデルで再ロード
+        current_model = self._whisper_combo.currentText()
+        self._on_whisper_changed(current_model)
 
     def _copy_all_conversation(self):
         """会話ログ全体をクリップボードにコピー"""
