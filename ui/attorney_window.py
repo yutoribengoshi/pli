@@ -47,6 +47,7 @@ class TranslationJob:
 _BG       = "#d6d2c8"
 _SURFACE  = "#e8e4da"
 _SUNKEN   = "#c4c0b4"
+_RAISED   = "#e0dcd2"
 _RAISED_L = "#f2eee6"
 _RAISED_D = "#9e9a8e"
 _FIELD    = "#fffff4"

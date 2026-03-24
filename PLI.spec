@@ -27,7 +27,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 block_cipher = None
-ROOT_DIR = os.path.abspath(os.path.dirname(__file__))
+ROOT_DIR = os.path.abspath(SPECPATH)
 
 
 def _resolve_path(path: str) -> str:
@@ -103,9 +103,13 @@ hiddenimports = [
 ]
 
 # Data files to bundle
+import mlx
+_mlx_dir = mlx.__path__[0]
 datas = [
     ('data/*.json', 'data'),
     ('assets/PLI.icns', 'assets'),
+    # mlx Metal shader (GPU compute) — PyInstaller doesn't auto-collect .metallib
+    (os.path.join(_mlx_dir, 'lib', 'mlx.metallib'), 'mlx/lib'),
 ]
 
 # Collect transformers data (tokenizer configs etc)

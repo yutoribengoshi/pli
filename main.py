@@ -475,7 +475,9 @@ def main():
                         help="Whisperモデルサイズ: tiny, base, small, medium, large-v3-turbo, large-v3")
     args = parser.parse_args()
 
-    mock = not args.real
+    # .app バンドル（PyInstaller）から起動時はデフォルトで実モード
+    is_frozen = getattr(sys, 'frozen', False)
+    mock = not (args.real or is_frozen)
     model_path = args.model
     n_ctx = args.n_ctx
     engine_type = args.engine
