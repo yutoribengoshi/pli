@@ -9,7 +9,8 @@ mlx-whisper>=0.4.0          # Apple Silicon GPU Whisper (primary STT)
 transformers>=4.38.0         # HuggingFace OPUS-MT / NLLB tokenizers & models
 ctranslate2>=4.0.0           # CTranslate2 optimized inference
 sentencepiece>=0.2.0         # Tokenizer for NLLB
-# llama-cpp-python>=0.2.0   # LLM engine (optional, large models)
+# llama-cpp-python は不要 — llama-server (HTTP API) 方式に移行済み
+# brew install llama.cpp でllama-serverをインストール
 
 # ── Model Management ──
 huggingface_hub>=0.20.0      # Model downloads from HuggingFace Hub

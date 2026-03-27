@@ -414,6 +414,8 @@ class PLIApp:
         self.attorney.set_loading_state(True)
         QTimer.singleShot(100, self._start_model_loading)
 
+        import atexit
+        atexit.register(self.interpreter.cleanup)
         return self.app.exec()
 
     def _start_model_loading(self):

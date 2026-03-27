@@ -8,6 +8,7 @@ All rights reserved.
 
 import os
 import re
+import subprocess
 import time
 import threading
 import unicodedata
@@ -439,35 +440,233 @@ class MockEngine:
 # ---------------------------------------------------------------------------
 
 class LLMEngine:
-    """llama.cpp ベースの実エンジン（遅延ロード対応）"""
+    """llama-server (OpenAI互換API) ベースのLLMエンジン
 
-    def __init__(self, model_path: str, n_ctx: int = 2048):
+    ユニバーサルソケット方式: llama-server を独立プロセスで起動し、
+    HTTP API 経由で通信する。メモリはサーバー停止時に全解放。
+    METIS・証拠ビューア等からも同じサーバーを共有可能。
+
+    ティア別構成:
+      Lite   (8GB):  LLMなし → NLLB + OPUS のみ
+      Standard(16GB): Qwen3-8B-Q4_K_M (~5GB)
+      Pro    (32GB+): Qwen3.5-35B-A3B-IQ2_M (~11GB, MoE 3B活性)
+      Max    (64GB+): Qwen3-235B-A22B-Q2_K_L (~58GB, MoE 22B活性)
+    """
+
+    # ティア別モデル定義
+    TIERS = {
+        "standard": {
+            "model": "Qwen3-8B-Q4_K_M.gguf",
+            "min_memory_gb": 16,
+            "ctx_size": 2048,
+            "description": "Standard (16GB Mac)",
+        },
+        "pro": {
+            "model": "Qwen3.5-35B-A3B-UD-IQ2_M.gguf",
+            "min_memory_gb": 32,
+            "ctx_size": 4096,
+            "description": "Pro (32GB+ Mac, MoE 3B active)",
+        },
+        "max": {
+            "model": "Qwen3-235B-A22B-Q2_K_L-00001-of-00002.gguf",
+            "min_memory_gb": 64,
+            "ctx_size": 8192,
+            "description": "Max (64GB+ Mac, MoE 22B active)",
+        },
+    }
+
+    def __init__(self, model_path: str = "", n_ctx: int = 2048,
+                 api_base: str = "http://127.0.0.1:8000"):
         import json as _json
         self._json = _json
         self._model_path = model_path
         self._n_ctx = n_ctx
-        self._llm = None
+        self._api_base = api_base.rstrip("/")
+        self._server_process: Optional[subprocess.Popen] = None
+        self._ready = False
         self._loading = False
         self._load_error: Optional[str] = None
+        # llama-cpp-python 互換: 既存GGUFがあればフォールバック用に保持
+        self._llm = None
+        self._use_api = True  # デフォルトでAPI方式
+
+    @staticmethod
+    def detect_tier() -> tuple[str, int]:
+        """搭載メモリから推奨ティアを自動検出"""
+        import platform
+        total_gb = 0
+        if platform.system() == "Darwin":
+            try:
+                import subprocess as sp
+                result = sp.run(["sysctl", "-n", "hw.memsize"],
+                                capture_output=True, text=True)
+                total_gb = int(result.stdout.strip()) // (1024 ** 3)
+            except Exception:
+                total_gb = 16  # fallback
+        else:
+            try:
+                import psutil
+                total_gb = psutil.virtual_memory().total // (1024 ** 3)
+            except ImportError:
+                total_gb = 16
+        if total_gb >= 64:
+            return "max", total_gb
+        elif total_gb >= 32:
+            return "pro", total_gb
+        elif total_gb >= 16:
+            return "standard", total_gb
+        else:
+            return "lite", total_gb
+
+    @staticmethod
+    def find_llama_server() -> Optional[str]:
+        """llama-server バイナリを探す"""
+        import shutil
+        # 優先順位: PATH > Homebrew > pli-models内
+        candidates = [
+            shutil.which("llama-server"),
+            "/opt/homebrew/bin/llama-server",
+            "/usr/local/bin/llama-server",
+            os.path.expanduser("~/dev/pli-models/llama-server"),
+        ]
+        for c in candidates:
+            if c and os.path.isfile(c) and os.access(c, os.X_OK):
+                return c
+        return None
+
+    def _find_model_path(self) -> Optional[str]:
+        """ティアに応じたモデルファイルを探す"""
+        if self._model_path and os.path.isfile(self._model_path):
+            return self._model_path
+        models_dir = os.path.expanduser("~/dev/pli-models")
+        if not os.path.isdir(models_dir):
+            models_dir = os.path.expanduser("~/pli-models")
+        # ティア順に大きいモデルを優先探索
+        for tier_name in ["max", "pro", "standard"]:
+            tier = self.TIERS[tier_name]
+            path = os.path.join(models_dir, tier["model"])
+            if os.path.isfile(path):
+                self._n_ctx = tier["ctx_size"]
+                print(f"[llm] ティア検出: {tier['description']}")
+                return path
+        # 既存の Qwen2.5-32B にフォールバック
+        legacy = os.path.join(models_dir, "Qwen2.5-32B-Instruct-Q6_K.gguf")
+        if os.path.isfile(legacy):
+            print("[llm] レガシーモデル検出: Qwen2.5-32B-Q6_K")
+            return legacy
+        return None
+
+    def start_server(self) -> bool:
+        """llama-server をバックグラウンドで起動"""
+        # 既にサーバーが応答するか確認
+        if self._health_check():
+            print("[llm] 既存の llama-server に接続")
+            self._ready = True
+            return True
+
+        server_bin = self.find_llama_server()
+        if not server_bin:
+            print("[llm] llama-server が見つかりません (brew install llama.cpp)")
+            return False
+
+        model_path = self._find_model_path()
+        if not model_path:
+            print("[llm] LLMモデルファイルが見つかりません")
+            return False
+
+        # llama-server 起動コマンド（メモリ最適化オプション付き）
+        cmd = [
+            server_bin,
+            "--model", model_path,
+            "--port", self._api_base.split(":")[-1],
+            "--host", "127.0.0.1",
+            "--flash-attn",                       # Flash Attention: ピークメモリ半減
+            "--ctx-size", str(self._n_ctx),
+            "--cache-type-k", "q4_0",             # KVキャッシュ量子化: メモリ1/4
+            "--cache-type-v", "q4_0",
+            "--n-gpu-layers", "99",               # 全層GPU
+            "--no-mmap",                          # F_NOCACHE相当: バッファキャッシュ回避
+            "-np", "1",                           # 並列リクエスト数
+            "-t", "4",                            # スレッド数
+        ]
+        print(f"[llm] llama-server 起動中: {os.path.basename(model_path)}")
+        try:
+            self._server_process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+            )
+        except Exception as e:
+            print(f"[llm] llama-server 起動失敗: {e}")
+            return False
+
+        # サーバー起動待ち（最大60秒）
+        import time as _time
+        for i in range(120):
+            if self._server_process.poll() is not None:
+                stderr = self._server_process.stderr.read().decode(errors="replace")
+                print(f"[llm] llama-server が異常終了: {stderr[:500]}")
+                return False
+            if self._health_check():
+                print(f"[llm] llama-server 起動完了 ({(i+1)*0.5:.1f}秒)")
+                self._ready = True
+                return True
+            _time.sleep(0.5)
+
+        print("[llm] llama-server 起動タイムアウト (60秒)")
+        self.stop_server()
+        return False
+
+    def stop_server(self):
+        """llama-server を停止してメモリ解放"""
+        if self._server_process is not None:
+            self._server_process.terminate()
+            try:
+                self._server_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._server_process.kill()
+            self._server_process = None
+            self._ready = False
+            print("[llm] llama-server 停止 → メモリ解放")
+
+    def _health_check(self) -> bool:
+        """サーバーの到達性チェック"""
+        import urllib.request
+        try:
+            req = urllib.request.Request(f"{self._api_base}/health")
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                return resp.status == 200
+        except Exception:
+            return False
 
     def load_model_async(self, on_done: Optional[Callable] = None):
-        """バックグラウンドでモデルをロード"""
+        """バックグラウンドでサーバー起動（API方式）またはモデルロード（レガシー）"""
         self._loading = True
 
         def _load():
             try:
-                from llama_cpp import Llama
-                self._llm = Llama(
-                    model_path=self._model_path,
-                    n_ctx=self._n_ctx,
-                    n_gpu_layers=-1,
-                    n_threads=10,
-                    verbose=False,
-                )
-                print(f"[info] LLMモデルのロード完了 (n_ctx={self._n_ctx})")
+                success = self.start_server()
+                if not success:
+                    # フォールバック: llama-cpp-python で直接ロード
+                    model_path = self._find_model_path()
+                    if model_path:
+                        print("[llm] llama-server 不可 → llama-cpp-python にフォールバック")
+                        self._use_api = False
+                        from llama_cpp import Llama
+                        self._llm = Llama(
+                            model_path=model_path,
+                            n_ctx=self._n_ctx,
+                            n_gpu_layers=-1,
+                            n_threads=10,
+                            verbose=False,
+                        )
+                        self._ready = True
+                        print(f"[info] LLMモデルのロード完了 (n_ctx={self._n_ctx})")
+                    else:
+                        self._load_error = "モデルファイルが見つかりません"
             except Exception as e:
                 self._load_error = str(e)
-                print(f"[error] LLMモデルのロード失敗: {e}")
+                print(f"[error] LLMロード失敗: {e}")
             finally:
                 self._loading = False
                 if on_done:
@@ -478,42 +677,83 @@ class LLMEngine:
 
     @property
     def is_ready(self) -> bool:
-        return self._llm is not None
+        return self._ready or self._llm is not None
 
     def _ensure_loaded(self):
-        """モデルが未ロードの場合は同期ロード"""
-        if self._llm is None:
-            if self._loading:
-                # 非同期ロード中 — 待つ
-                import time as _time
-                while self._loading:
-                    _time.sleep(0.1)
-            if self._llm is None and not self._load_error:
-                from llama_cpp import Llama
-                self._llm = Llama(
-                    model_path=self._model_path,
-                    n_ctx=self._n_ctx,
-                    n_gpu_layers=-1,
-                    n_threads=10,
-                    verbose=False,
-                )
+        """サーバー接続またはモデルが準備できていない場合は待機"""
+        if self._ready or self._llm is not None:
+            return
+        if self._loading:
+            import time as _time
+            while self._loading:
+                _time.sleep(0.1)
+        if not self._ready and self._llm is None and not self._load_error:
+            # 最終手段: 同期でサーバー起動を試みる
+            self.start_server()
 
     def _chat(self, system: str, user: str, max_tokens: int = 256, stream: bool = False):
         self._ensure_loaded()
-        if self._llm is None:
-            raise RuntimeError("LLMモデルが利用できません")
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ]
-        if stream:
-            return self._llm.create_chat_completion(
-                messages=messages, max_tokens=max_tokens, temperature=0.1, stream=True
+
+        # API方式（推奨）
+        if self._use_api and self._ready:
+            return self._chat_api(messages, max_tokens, stream)
+
+        # レガシー: llama-cpp-python 直接
+        if self._llm is not None:
+            if stream:
+                return self._llm.create_chat_completion(
+                    messages=messages, max_tokens=max_tokens, temperature=0.1, stream=True
+                )
+            resp = self._llm.create_chat_completion(
+                messages=messages, max_tokens=max_tokens, temperature=0.1
             )
-        resp = self._llm.create_chat_completion(
-            messages=messages, max_tokens=max_tokens, temperature=0.1
+            return resp["choices"][0]["message"]["content"].strip()
+
+        raise RuntimeError("LLMモデルが利用できません")
+
+    def _chat_api(self, messages: list, max_tokens: int = 256, stream: bool = False):
+        """HTTP API 経由で llama-server に問い合わせ"""
+        import urllib.request
+        payload = self._json.dumps({
+            "model": "local",
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": 0.1,
+            "stream": stream,
+        }).encode()
+        req = urllib.request.Request(
+            f"{self._api_base}/v1/chat/completions",
+            data=payload,
+            headers={"Content-Type": "application/json"},
         )
-        return resp["choices"][0]["message"]["content"].strip()
+        if stream:
+            return self._stream_api(req)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = self._json.loads(resp.read())
+        return data["choices"][0]["message"]["content"].strip()
+
+    def _stream_api(self, req):
+        """SSE ストリーミング応答をチャンク生成"""
+        import urllib.request
+        resp = urllib.request.urlopen(req, timeout=60)
+        buffer = ""
+        for line_bytes in resp:
+            line = line_bytes.decode("utf-8", errors="replace").strip()
+            if not line or not line.startswith("data: "):
+                continue
+            data_str = line[6:]
+            if data_str == "[DONE]":
+                break
+            try:
+                chunk = self._json.loads(data_str)
+                yield chunk
+            except self._json.JSONDecodeError:
+                continue
+        resp.close()
 
     def translate(self, text: str, src_lang: str, tgt_lang: str) -> str:
         src_name = "日本語" if src_lang == "ja" else get_language_name(src_lang)
@@ -1515,40 +1755,44 @@ class Interpreter:
         threading.Thread(target=_load, daemon=True).start()
 
     def _load_llm(self, on_progress):
-        """LLMエンジン（llama.cpp）のロード"""
-        print("[info] LLMモデルをロード中...")
+        """LLMエンジン（llama-server API方式 or llama-cpp-python フォールバック）のロード"""
+        tier_name, total_gb = LLMEngine.detect_tier()
+        print(f"[info] メモリ: {total_gb}GB → ティア: {tier_name}")
+
+        if tier_name == "lite":
+            print("[info] 8GB以下: LLMスキップ → NLLBにフォールバック")
+            self._load_nllb(on_progress)
+            return
+
         if on_progress:
             on_progress("llm", 0.0)
 
-        _llm_done = threading.Event()
-        if on_progress and os.path.exists(self._model_path):
-            file_size = os.path.getsize(self._model_path)
-            def _monitor_progress():
-                try:
-                    import resource
-                    start_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-                    while not _llm_done.is_set():
-                        cur_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-                        delta = max(0, cur_rss - start_rss)
-                        ratio = min(delta / file_size, 0.95) if file_size > 0 else 0
-                        on_progress("llm", ratio)
-                        if _llm_done.wait(timeout=1.0):
-                            break
-                except Exception:
-                    pass
-            monitor = threading.Thread(target=_monitor_progress, daemon=True)
-            monitor.start()
+        llm = LLMEngine(self._model_path, n_ctx=self._n_ctx)
 
-        try:
-            llm = LLMEngine(self._model_path, n_ctx=self._n_ctx)
-            llm._ensure_loaded()
+        # サーバー起動（API方式を優先試行）
+        if on_progress:
+            on_progress("llm", 0.3)
+
+        _llm_done = threading.Event()
+
+        def _on_done():
             _llm_done.set()
+
+        llm.load_model_async(on_done=_on_done)
+
+        # 最大120秒待機（大型モデルのロードに時間がかかる）
+        if not _llm_done.wait(timeout=120):
+            print("[warn] LLMロードタイムアウト")
+
+        if llm.is_ready:
             if on_progress:
                 on_progress("llm", 1.0)
             self.engine = llm
-            print("[info] LLMモデルのロード完了")
-        finally:
-            _llm_done.set()
+            mode = "API (llama-server)" if llm._use_api else "in-process (llama-cpp-python)"
+            print(f"[info] LLMエンジンのロード完了 ({mode})")
+        else:
+            print(f"[warn] LLMロード失敗: {llm._load_error} → NLLBにフォールバック")
+            self._load_nllb(on_progress)
 
     def _load_nllb(self, on_progress):
         """NLLBエンジン（CTranslate2）のロード"""
@@ -1588,6 +1832,15 @@ class Interpreter:
         self.engine = hybrid
         print(f"[info] ハイブリッドエンジンのロード完了 "
               f"(OPUS-MT: {len(hybrid.get_loaded_pairs())}ペア)")
+
+    def cleanup(self):
+        """終了処理: llama-server を停止してメモリ解放"""
+        if isinstance(self.engine, LLMEngine):
+            self.engine.stop_server()
+        elif isinstance(self.engine, HybridEngine):
+            # HybridEngineの中にLLMEngineがあればそれも停止
+            if hasattr(self.engine, '_llm_engine') and isinstance(self.engine._llm_engine, LLMEngine):
+                self.engine._llm_engine.stop_server()
 
     def set_target_language(self, lang_code: str):
         """被疑者側の言語を設定"""
