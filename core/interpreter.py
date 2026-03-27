@@ -455,23 +455,63 @@ class LLMEngine:
 
     # ティア別モデル定義
     TIERS = {
+        # --- macOS (Apple Silicon, Metal GPU, 統合メモリ) ---
         "standard": {
             "model": "Qwen3-8B-Q4_K_M.gguf",
             "min_memory_gb": 16,
             "ctx_size": 2048,
+            "threads": 4,
+            "gpu_layers": 99,
             "description": "Standard (16GB Mac)",
         },
         "pro": {
             "model": "Qwen3.5-35B-A3B-UD-IQ2_M.gguf",
             "min_memory_gb": 32,
             "ctx_size": 4096,
+            "threads": 4,
+            "gpu_layers": 99,
             "description": "Pro (32GB+ Mac, MoE 3B active)",
         },
         "max": {
             "model": "Qwen3-235B-A22B-Q2_K_L-00001-of-00002.gguf",
             "min_memory_gb": 64,
             "ctx_size": 8192,
+            "threads": 4,
+            "gpu_layers": 99,
             "description": "Max (64GB+ Mac, MoE 22B active)",
+        },
+        # --- Windows (CPU推論 or CUDA) ---
+        "win_low": {
+            "model": "Qwen3-4B-Q4_K_M.gguf",
+            "min_memory_gb": 16,
+            "ctx_size": 2048,
+            "threads": 4,
+            "gpu_layers": 0,
+            "description": "Windows Low (16GB, CPU-only)",
+        },
+        "win_mid": {
+            "model": "Qwen3-8B-Q4_K_M.gguf",
+            "min_memory_gb": 16,
+            "ctx_size": 4096,
+            "threads": 6,
+            "gpu_layers": 0,
+            "description": "Windows Mid (16GB, AVX-512)",
+        },
+        "win_high": {
+            "model": "Qwen3-32B-Q4_K_M.gguf",
+            "min_memory_gb": 32,
+            "ctx_size": 4096,
+            "threads": 8,
+            "gpu_layers": 0,
+            "description": "Windows High (32GB+)",
+        },
+        "win_cuda": {
+            "model": "Qwen3-8B-Q4_K_M.gguf",
+            "min_memory_gb": 16,
+            "ctx_size": 4096,
+            "threads": 4,
+            "gpu_layers": 99,
+            "description": "Windows CUDA (NVIDIA GPU 8GB+)",
         },
     }
 
@@ -491,44 +531,96 @@ class LLMEngine:
         self._use_api = True  # デフォルトでAPI方式
 
     @staticmethod
+    def _has_avx512() -> bool:
+        """AVX-512対応チェック"""
+        try:
+            import cpuinfo
+            flags = cpuinfo.get_cpu_info().get('flags', [])
+            return 'avx512f' in flags
+        except Exception:
+            return False
+
+    @staticmethod
+    def _has_nvidia_gpu() -> bool:
+        """NVIDIA GPU (CUDA) の利用可否"""
+        try:
+            import ctranslate2
+            return "cuda" in ctranslate2.get_supported_compute_types("cuda")
+        except Exception:
+            return False
+
+    @staticmethod
     def detect_tier() -> tuple[str, int]:
-        """搭載メモリから推奨ティアを自動検出"""
+        """搭載メモリ・OS・CPU/GPUから推奨ティアを自動検出
+
+        Returns:
+            (tier_name, total_memory_gb)
+        """
         import platform
+        os_name = platform.system()
         total_gb = 0
-        if platform.system() == "Darwin":
+
+        if os_name == "Darwin":
             try:
                 import subprocess as sp
                 result = sp.run(["sysctl", "-n", "hw.memsize"],
                                 capture_output=True, text=True)
                 total_gb = int(result.stdout.strip()) // (1024 ** 3)
             except Exception:
-                total_gb = 16  # fallback
+                total_gb = 16
+            # macOS (Apple Silicon) — 統合メモリ、Metal GPU
+            if total_gb >= 64:
+                return "max", total_gb
+            elif total_gb >= 32:
+                return "pro", total_gb
+            elif total_gb >= 16:
+                return "standard", total_gb
+            else:
+                return "lite", total_gb
+
         else:
+            # Windows / Linux
             try:
                 import psutil
                 total_gb = psutil.virtual_memory().total // (1024 ** 3)
             except ImportError:
                 total_gb = 16
-        if total_gb >= 64:
-            return "max", total_gb
-        elif total_gb >= 32:
-            return "pro", total_gb
-        elif total_gb >= 16:
-            return "standard", total_gb
-        else:
-            return "lite", total_gb
+
+            # NVIDIA GPUが使えるなら最優先
+            if LLMEngine._has_nvidia_gpu():
+                return "win_cuda", total_gb
+
+            # CPU推論 — RAM + AVX命令セットで判定
+            avx512 = LLMEngine._has_avx512()
+            if total_gb >= 32:
+                return "win_high", total_gb
+            elif total_gb >= 16:
+                if avx512:
+                    return "win_mid", total_gb  # AVX-512: Qwen3-8B OK
+                else:
+                    return "win_low", total_gb  # AVX2: Qwen3-4B が安全
+            else:
+                return "lite", total_gb
 
     @staticmethod
     def find_llama_server() -> Optional[str]:
-        """llama-server バイナリを探す"""
-        import shutil
-        # 優先順位: PATH > Homebrew > pli-models内
-        candidates = [
-            shutil.which("llama-server"),
-            "/opt/homebrew/bin/llama-server",
-            "/usr/local/bin/llama-server",
-            os.path.expanduser("~/dev/pli-models/llama-server"),
-        ]
+        """llama-server バイナリを探す (macOS/Windows両対応)"""
+        import shutil, platform
+        candidates = [shutil.which("llama-server")]
+        if platform.system() == "Darwin":
+            candidates += [
+                "/opt/homebrew/bin/llama-server",
+                "/usr/local/bin/llama-server",
+                os.path.expanduser("~/dev/pli-models/llama-server"),
+            ]
+        else:
+            # Windows: llama-server.exe
+            candidates += [
+                shutil.which("llama-server.exe"),
+                os.path.expanduser("~/pli-models/llama-server.exe"),
+                os.path.expanduser("~/dev/pli-models/llama-server.exe"),
+                r"C:\llama.cpp\build\bin\Release\llama-server.exe",
+            ]
         for c in candidates:
             if c and os.path.isfile(c) and os.access(c, os.X_OK):
                 return c
@@ -574,21 +666,30 @@ class LLMEngine:
             print("[llm] LLMモデルファイルが見つかりません")
             return False
 
+        # ティア情報からパラメータ取得
+        tier_name, _ = self.detect_tier()
+        tier_info = self.TIERS.get(tier_name, {})
+        threads = str(tier_info.get("threads", 4))
+        gpu_layers = tier_info.get("gpu_layers", 0)
+
         # llama-server 起動コマンド（メモリ最適化オプション付き）
         cmd = [
             server_bin,
             "--model", model_path,
             "--port", self._api_base.split(":")[-1],
             "--host", "127.0.0.1",
-            "--flash-attn",                       # Flash Attention: ピークメモリ半減
             "--ctx-size", str(self._n_ctx),
             "--cache-type-k", "q4_0",             # KVキャッシュ量子化: メモリ1/4
             "--cache-type-v", "q4_0",
-            "--n-gpu-layers", "99",               # 全層GPU
             "--no-mmap",                          # F_NOCACHE相当: バッファキャッシュ回避
             "-np", "1",                           # 並列リクエスト数
-            "-t", "4",                            # スレッド数
+            "-t", threads,                        # ティア別スレッド数
         ]
+        # GPU対応時のみGPUオプション追加
+        if gpu_layers > 0:
+            cmd += ["--n-gpu-layers", str(gpu_layers)]
+            cmd += ["--flash-attn"]               # Flash Attention: GPUピークメモリ半減
+        print(f"[llm] ティア: {tier_name}, スレッド: {threads}, GPU層: {gpu_layers}")
         print(f"[llm] llama-server 起動中: {os.path.basename(model_path)}")
         try:
             self._server_process = subprocess.Popen(
@@ -1544,15 +1645,69 @@ class MockSTT:
         return text, lang
 
 
+def detect_cpu_backend() -> str:
+    """CPUベンダーを検出して最適なバックエンドを返す
+
+    Returns:
+        "cuda" (NVIDIA), "openvino" (Intel), "directml" (AMD GPU), "cpu" (汎用)
+    """
+    import platform
+    # NVIDIA GPU チェック
+    try:
+        import ctranslate2
+        if "cuda" in ctranslate2.get_supported_compute_types("cuda"):
+            return "cuda"
+    except Exception:
+        pass
+    # CPU ベンダー検出
+    cpu_info = platform.processor().lower()
+    if "intel" in cpu_info or "genuineintel" in cpu_info:
+        try:
+            import openvino  # noqa: F401
+            return "openvino"
+        except ImportError:
+            return "cpu"
+    if "amd" in cpu_info or "authenticamd" in cpu_info:
+        try:
+            import onnxruntime_directml  # noqa: F401
+            return "directml"
+        except ImportError:
+            return "cpu"
+    return "cpu"
+
+
+def get_available_backends() -> list[str]:
+    """インストール済みのバックエンドを検出してリストで返す"""
+    backends = ["cpu"]
+    try:
+        import ctranslate2
+        if "cuda" in ctranslate2.get_supported_compute_types("cuda"):
+            backends.append("cuda")
+    except Exception:
+        pass
+    try:
+        import openvino  # noqa: F401
+        backends.append("openvino")
+    except ImportError:
+        pass
+    try:
+        import onnxruntime_directml  # noqa: F401
+        backends.append("directml")
+    except ImportError:
+        pass
+    return backends
+
+
 class WhisperSTT:
-    """STTエンジン — プラットフォームに応じて自動選択
+    """STTエンジン — プラットフォーム・CPUに応じて自動選択
 
     macOS (Apple Silicon): mlx-whisper (Metal GPU加速) ~0.5秒/2秒音声
-    Windows/Linux: faster-whisper (CUDA/CPU) ~5秒/2秒音声
+    Windows/Linux: faster-whisper (CUDA/OpenVINO/CPU) ~5秒/2秒音声
     """
 
-    def __init__(self, whisper_model: str = ""):
+    def __init__(self, whisper_model: str = "", cpu_backend: str = "auto"):
         import sys
+        self._cpu_backend = cpu_backend
         if sys.platform == "darwin":
             # macOS: mlx-whisper (Apple Silicon GPU加速)
             import mlx_whisper
@@ -1560,23 +1715,44 @@ class WhisperSTT:
             self._mlx_whisper = mlx_whisper
             self._repo = "mlx-community/whisper-turbo"
         else:
-            # Windows/Linux: faster-whisper (CUDA優先、失敗時CPUフォールバック)
+            # Windows/Linux: faster-whisper
             from faster_whisper import WhisperModel
             self._backend = "faster"
-            model_name = whisper_model or "small"
-            print(f"[info] Whisperモデル: {model_name}")
-            try:
-                self._model = WhisperModel(
-                    model_name,
-                    device="cuda",
-                    compute_type="float16",
-                )
-            except Exception:
-                self._model = WhisperModel(
-                    model_name,
-                    device="cpu",
-                    compute_type="int8",
-                )
+            model_name = whisper_model or "medium"
+
+            # バックエンド自動検出
+            if cpu_backend == "auto":
+                cpu_backend = detect_cpu_backend()
+                self._cpu_backend = cpu_backend
+
+            print(f"[info] Whisperモデル: {model_name}, バックエンド: {cpu_backend}")
+
+            if cpu_backend == "cuda":
+                try:
+                    self._model = WhisperModel(
+                        model_name, device="cuda", compute_type="float16",
+                    )
+                    return
+                except Exception as e:
+                    print(f"[info] CUDA失敗、CPUにフォールバック: {e}")
+                    cpu_backend = "cpu"
+
+            if cpu_backend == "openvino":
+                try:
+                    self._model = WhisperModel(
+                        model_name, device="cpu", compute_type="int8",
+                        backend="openvino",
+                    )
+                    print("[info] OpenVINOバックエンドで起動")
+                    return
+                except Exception as e:
+                    print(f"[info] OpenVINO失敗、CPUにフォールバック: {e}")
+                    cpu_backend = "cpu"
+
+            # 汎用CPU
+            self._model = WhisperModel(
+                model_name, device="cpu", compute_type="int8",
+            )
 
     def transcribe(self, audio_path: str) -> tuple[str, str]:
         if self._backend == "mlx":
@@ -1588,7 +1764,14 @@ class WhisperSTT:
             lang = result.get("language", "ja")
             return text.strip(), lang
         else:
-            segments, info = self._model.transcribe(audio_path)
+            segments, info = self._model.transcribe(
+                audio_path,
+                beam_size=5,
+                best_of=5,
+                temperature=0.0,
+                condition_on_previous_text=False,
+                vad_filter=True,
+            )
             text = "".join(seg.text for seg in segments)
             return text.strip(), info.language
 
@@ -1718,7 +1901,7 @@ class Interpreter:
                 if on_progress:
                     on_progress("stt", 0.0)
                 print("[info] Whisper STTをロード中...")
-                self.stt = WhisperSTT()
+                self.stt = WhisperSTT(whisper_model=self._whisper_model)
                 self._stt_ready = True
                 if on_progress:
                     on_progress("stt", 1.0)
