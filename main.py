@@ -22,6 +22,7 @@ __license__ = "Proprietary"
 import sys
 import os
 import argparse
+from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import Qt, QTimer, QObject, Signal
@@ -491,7 +492,7 @@ def main():
         engine_cfg = os.path.join(config_dir, "last_engine.txt")
         if os.path.exists(engine_cfg):
             try:
-                saved_engine = open(engine_cfg).read().strip()
+                saved_engine = Path(engine_cfg).read_text().strip()
                 if saved_engine in ("llm", "nllb", "hybrid"):
                     engine_type = saved_engine
                     print(f"[info] 前回のエンジンを使用: {engine_type}")
@@ -508,7 +509,7 @@ def main():
             if os.path.exists(nllb_cfg):
                 try:
                     from core.nllb_downloader import get_model_dir, is_downloaded
-                    saved_key = open(nllb_cfg).read().strip()
+                    saved_key = Path(nllb_cfg).read_text().strip()
                     if saved_key and is_downloaded(saved_key):
                         nllb_model_dir = get_model_dir(saved_key)
                         print(f"[info] 前回のNLLBモデルを使用: {saved_key}")
@@ -540,7 +541,7 @@ def main():
             if os.path.exists(nllb_cfg):
                 try:
                     from core.nllb_downloader import get_model_dir, is_downloaded
-                    saved_key = open(nllb_cfg).read().strip()
+                    saved_key = Path(nllb_cfg).read_text().strip()
                     if saved_key and is_downloaded(saved_key):
                         nllb_model_dir = get_model_dir(saved_key)
                         print(f"[info] NLLBフォールバック: {saved_key}")
@@ -590,7 +591,7 @@ def main():
             ctx_cfg = os.path.join(config_dir, "last_n_ctx.txt")
             if os.path.exists(ctx_cfg):
                 try:
-                    n_ctx = int(open(ctx_cfg).read().strip())
+                    n_ctx = int(Path(ctx_cfg).read_text().strip())
                     print(f"[info] 前回のコンテキスト長を使用: {n_ctx}")
                 except (ValueError, OSError):
                     pass

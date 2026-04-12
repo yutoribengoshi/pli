@@ -37,6 +37,7 @@ class Recorder:
         self._saved_files: list[str] = []
         self._sample_rate = 16000
         self._channels = 1
+        self._error: Optional[str] = None
 
     def set_mode(self, mode: RecordMode):
         was_recording = self._recording
@@ -53,6 +54,7 @@ class Recorder:
         if self.mode == RecordMode.OFF or self._recording:
             return
         self._recording = True
+        self._error = None
         with self._buffer_lock:
             self._buffer = io.BytesIO()
         self._thread = threading.Thread(target=self._record_loop, daemon=True)
@@ -77,8 +79,8 @@ class Recorder:
             try:
                 self._stream.stop()
                 self._stream.close()
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[error] recorder: close failed: {e}")
             self._stream = None
         self._audio = None
 
@@ -104,8 +106,9 @@ class Recorder:
                 with self._buffer_lock:
                     self._buffer.write(silence)
                 time.sleep(1024 / self._sample_rate)
-        except Exception:
-            pass
+        except Exception as e:
+            self._error = str(e)
+            print(f"[error] recorder: {e}")
         finally:
             self._close_audio_handles()
 

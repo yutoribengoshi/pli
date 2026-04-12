@@ -93,8 +93,8 @@ class HideMode:
             return  # Windows では Qt 側で制御
         try:
             self._set_process_visibility(False)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[warn] hide_mode: {e}")
 
     def _show_in_dock(self):
         """Dockにアプリを復帰"""
@@ -102,8 +102,8 @@ class HideMode:
             return  # Windows では Qt 側で制御
         try:
             self._set_process_visibility(True)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[warn] hide_mode: {e}")
 
     def _set_process_visibility(self, visible: bool):
         names = self._candidate_process_names()
@@ -130,8 +130,8 @@ class HideMode:
             app = QApplication.instance()
             if app and app.applicationName():
                 names.append(app.applicationName())
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[warn] hide_mode: {e}")
 
         exe_name = os.path.splitext(os.path.basename(sys.executable))[0]
         if exe_name:
@@ -153,7 +153,8 @@ class HideMode:
             try:
                 subprocess.Popen(["explorer.exe", os.path.expanduser("~")])
                 self._dummy_mode = "explorer"
-            except Exception:
+            except Exception as e:
+                print(f"[warn] hide_mode: {e}")
                 self._dummy_mode = ""
             return
 
@@ -167,8 +168,8 @@ class HideMode:
                 )
                 self._dummy_mode = "quicklook"
                 return
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[warn] hide_mode: {e}")
 
         # PDFが未設定、またはQuick Look起動に失敗した場合はFinderを前面に
         try:
@@ -178,19 +179,21 @@ class HideMode:
                 capture_output=True, timeout=2
             )
             self._dummy_mode = "finder"
-        except Exception:
+        except Exception as e:
+            print(f"[warn] hide_mode: {e}")
             self._dummy_mode = ""
 
     def _close_dummy(self):
         """ダミーアプリを閉じる"""
-        if self._dummy_process:
+        if self._dummy_process is not None:
             try:
                 self._dummy_process.terminate()
                 self._dummy_process.wait(timeout=2)
-            except Exception:
+            except Exception as e:
+                print(f"[warn] hide_mode: {e}")
                 try:
                     self._dummy_process.kill()
-                except Exception:
-                    pass
+                except Exception as e2:
+                    print(f"[warn] hide_mode: {e2}")
             self._dummy_process = None
         self._dummy_mode = ""

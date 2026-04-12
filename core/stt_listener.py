@@ -193,88 +193,89 @@ class STTListener:
                 self.on_error(f"マイクを開けません: {e}")
             return
 
-        # 自動キャリブレーション（最初の1秒）
-        if self._auto_threshold:
-            energies = []
-            cal_chunks = int(self._sample_rate / self._chunk_size * 1.0)
-            for _ in range(cal_chunks):
-                if not self._running:
-                    break
-                data, overflowed = stream.read(self._chunk_size)
-                energies.append(self._calc_energy(bytes(data)))
-            if energies:
-                avg = sum(energies) / len(energies)
-                self._ambient_energy = avg
-                self._energy_threshold = max(200, avg * self._sensitivity_multiplier)
-                print(f"[STT] 自動キャリブレーション: ノイズ={avg:.0f}, 閾値={self._energy_threshold:.0f} (×{self._sensitivity_multiplier})")
+        try:
+            # 自動キャリブレーション（最初の1秒）
+            if self._auto_threshold:
+                energies = []
+                cal_chunks = int(self._sample_rate / self._chunk_size * 1.0)
+                for _ in range(cal_chunks):
+                    if not self._running:
+                        break
+                    data, overflowed = stream.read(self._chunk_size)
+                    energies.append(self._calc_energy(bytes(data)))
+                if energies:
+                    avg = sum(energies) / len(energies)
+                    self._ambient_energy = avg
+                    self._energy_threshold = max(200, avg * self._sensitivity_multiplier)
+                    print(f"[STT] 自動キャリブレーション: ノイズ={avg:.0f}, 閾値={self._energy_threshold:.0f} (×{self._sensitivity_multiplier})")
 
-        self._set_state(ListenerState.IDLE)
-        speech_buffer: list[bytes] = []
-        silence_chunks = 0
-        speech_start_time = 0.0
-        silence_limit = int(self._silence_duration * self._sample_rate / self._chunk_size)
-        min_speech_chunks = int(self._min_speech_duration * self._sample_rate / self._chunk_size)
+            self._set_state(ListenerState.IDLE)
+            speech_buffer: list[bytes] = []
+            silence_chunks = 0
+            speech_start_time = 0.0
+            silence_limit = int(self._silence_duration * self._sample_rate / self._chunk_size)
+            min_speech_chunks = int(self._min_speech_duration * self._sample_rate / self._chunk_size)
 
-        # プリバッファ: 発話検出前の音声を保持（出だしの切れ防止）
-        from collections import deque
-        _PRE_BUFFER_CHUNKS = int(0.5 * self._sample_rate / self._chunk_size)  # 0.5秒分
-        pre_buffer: deque[bytes] = deque(maxlen=_PRE_BUFFER_CHUNKS)
+            # プリバッファ: 発話検出前の音声を保持（出だしの切れ防止）
+            from collections import deque
+            _PRE_BUFFER_CHUNKS = int(0.5 * self._sample_rate / self._chunk_size)  # 0.5秒分
+            pre_buffer: deque[bytes] = deque(maxlen=_PRE_BUFFER_CHUNKS)
 
-        while self._running:
-            try:
-                data, overflowed = stream.read(self._chunk_size)
-                data = bytes(data)
-            except Exception:
-                continue
+            while self._running:
+                try:
+                    data, overflowed = stream.read(self._chunk_size)
+                    data = bytes(data)
+                except Exception:
+                    continue
 
-            energy = self._calc_energy(data)
-            is_speech = energy > self._energy_threshold
+                energy = self._calc_energy(data)
+                is_speech = energy > self._energy_threshold
 
-            if self.state == ListenerState.IDLE:
-                if is_speech:
-                    # 発話開始 — プリバッファの内容も含める（出だし保護）
-                    speech_buffer = list(pre_buffer) + [data]
-                    pre_buffer.clear()
-                    silence_chunks = 0
-                    speech_start_time = time.time()
-                    self._set_state(ListenerState.LISTENING)
-                else:
-                    # 待機中はプリバッファに溜める
-                    pre_buffer.append(data)
+                if self.state == ListenerState.IDLE:
+                    if is_speech:
+                        # 発話開始 — プリバッファの内容も含める（出だし保護）
+                        speech_buffer = list(pre_buffer) + [data]
+                        pre_buffer.clear()
+                        silence_chunks = 0
+                        speech_start_time = time.time()
+                        self._set_state(ListenerState.LISTENING)
+                    else:
+                        # 待機中はプリバッファに溜める
+                        pre_buffer.append(data)
 
-            elif self.state == ListenerState.LISTENING:
-                speech_buffer.append(data)
+                elif self.state == ListenerState.LISTENING:
+                    speech_buffer.append(data)
 
-                if is_speech:
-                    silence_chunks = 0
-                else:
-                    silence_chunks += 1
+                    if is_speech:
+                        silence_chunks = 0
+                    else:
+                        silence_chunks += 1
 
-                elapsed = time.time() - speech_start_time
+                    elapsed = time.time() - speech_start_time
 
-                # 無音が続いた → 発話終了
-                if silence_chunks >= silence_limit:
-                    if len(speech_buffer) >= min_speech_chunks:
+                    # 無音が続いた → 発話終了
+                    if silence_chunks >= silence_limit:
+                        if len(speech_buffer) >= min_speech_chunks:
+                            self._set_state(ListenerState.PROCESSING)
+                            self._process_speech(speech_buffer)
+                        speech_buffer = []
+                        silence_chunks = 0
+                        self._set_state(ListenerState.IDLE)
+
+                    # 安全弁: 長すぎる発話は強制処理
+                    elif elapsed >= self._max_speech_duration:
                         self._set_state(ListenerState.PROCESSING)
                         self._process_speech(speech_buffer)
-                    speech_buffer = []
-                    silence_chunks = 0
-                    self._set_state(ListenerState.IDLE)
-
-                # 安全弁: 長すぎる発話は強制処理
-                elif elapsed >= self._max_speech_duration:
-                    self._set_state(ListenerState.PROCESSING)
-                    self._process_speech(speech_buffer)
-                    speech_buffer = []
-                    silence_chunks = 0
-                    self._set_state(ListenerState.IDLE)
-
-        # クリーンアップ
-        try:
-            stream.stop()
-            stream.close()
-        except Exception:
-            pass
+                        speech_buffer = []
+                        silence_chunks = 0
+                        self._set_state(ListenerState.IDLE)
+        finally:
+            # クリーンアップ
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:
+                pass
 
     def _process_speech(self, audio_chunks: list[bytes]):
         """音声バッファをWhisperで処理"""
