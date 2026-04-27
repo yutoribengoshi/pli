@@ -16,7 +16,8 @@ sentencepiece>=0.2.0         # Tokenizer for NLLB
 huggingface_hub>=0.20.0      # Model downloads from HuggingFace Hub
 
 # ── Audio ──
-PyAudio>=0.2.14              # Microphone input
+sounddevice>=0.5.0           # Microphone input (cross-platform, recommended)
+PyAudio>=0.2.14              # Microphone input (legacy fallback)
 
 # ── Document Export ──
 python-docx>=1.0.0           # Word document generation
