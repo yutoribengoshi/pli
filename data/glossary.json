@@ -1,7 +1,8 @@
 {
+  "_comment": "ユーザー編集用の固有名詞辞書（サンプル）。GUIから自由に追加・編集できます。",
+  "_usage": "弁護士の氏名・事務所名・依頼者名・関連企業名・地名等を登録すると、機械翻訳が誤訳しやすい固有名詞を正しく訳せるようになります。",
   "entries": [
-    {"ja": "関智幸", "foreign": "Tomoyuki Seki", "type": "name"},
-    {"ja": "関智之", "foreign": "Tomoyuki Seki", "type": "name"},
+    {"ja": "山田太郎", "foreign": "Taro Yamada", "type": "name"},
     {"ja": "東京弁護士会", "foreign": "Tokyo Bar Association", "type": "name"}
   ]
 }

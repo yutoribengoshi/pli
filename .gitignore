@@ -47,3 +47,22 @@ build/
 # npm (if any)
 node_modules/
 ~$*
+
+# PLI 録音・記録ファイル（個人情報を含む可能性）
+pli_record_*.json
+pli_record_*.txt
+pli_record_*.wav
+pli_record_*.m4a
+
+# ユーザー編集後の辞書（公開しない）
+data/glossary_user.json
+data/phrases_user.json
+
+# モデルキャッシュ
+~/pli-models/
+*.gguf
+
+# 開発時の一時ファイル
+PLI_仕様書_*.docx
+PLI_仕様書_*.pdf
+PLI_定義書_*.md
