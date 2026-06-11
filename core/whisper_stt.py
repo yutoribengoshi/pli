@@ -11,6 +11,10 @@ import platform
 import sys
 from pathlib import Path
 
+from core.logging_setup import get_logger
+
+logger = get_logger(__name__)
+
 # mlx-whisper が使うHuggingFaceリポジトリ（macOS / Apple Silicon用）
 WHISPER_REPO = "mlx-community/whisper-turbo"
 
@@ -116,7 +120,7 @@ def detect_cpu_backend() -> str:
         if "cuda" in ctranslate2.get_supported_compute_types("cuda"):
             return "cuda"
     except Exception as e:
-        print(f"[warn] detect_cpu_backend: CUDA check failed: {e}")
+        logger.warning("detect_cpu_backend: CUDA check failed: %s", e)
     # CPU ベンダー検出
     cpu_info = platform.processor().lower()
     if "intel" in cpu_info or "genuineintel" in cpu_info:
@@ -142,7 +146,7 @@ def get_available_backends() -> list[str]:
         if "cuda" in ctranslate2.get_supported_compute_types("cuda"):
             backends.append("cuda")
     except Exception as e:
-        print(f"[warn] get_available_backends: CUDA check failed: {e}")
+        logger.warning("get_available_backends: CUDA check failed: %s", e)
     try:
         import openvino  # noqa: F401
         backends.append("openvino")
@@ -186,7 +190,7 @@ class WhisperSTT:
                 cpu_backend = detect_cpu_backend()
                 self._cpu_backend = cpu_backend
 
-            print(f"[info] Whisperモデル: {model_name}, バックエンド: {cpu_backend}")
+            logger.info("Whisperモデル: %s, バックエンド: %s", model_name, cpu_backend)
 
             if cpu_backend == "cuda":
                 try:
@@ -195,7 +199,7 @@ class WhisperSTT:
                     )
                     return
                 except Exception as e:
-                    print(f"[info] CUDA失敗、CPUにフォールバック: {e}")
+                    logger.info("CUDA失敗、CPUにフォールバック: %s", e)
                     cpu_backend = "cpu"
 
             if cpu_backend == "openvino":
@@ -204,14 +208,14 @@ class WhisperSTT:
                         model_name, device="cpu", compute_type="int8",
                         backend="openvino",
                     )
-                    print("[info] OpenVINOバックエンドで起動")
+                    logger.info("OpenVINOバックエンドで起動")
                     return
                 except Exception as e:
-                    print(f"[info] OpenVINO失敗、CPUにフォールバック: {e}")
+                    logger.info("OpenVINO失敗、CPUにフォールバック: %s", e)
                     cpu_backend = "cpu"
 
             # 汎用CPU
-            print(f"[info] CPUバックエンドで起動 (selected: {cpu_backend})")
+            logger.info("CPUバックエンドで起動 (selected: %s)", cpu_backend)
             self._model = WhisperModel(
                 model_name, device="cpu", compute_type="int8",
             )

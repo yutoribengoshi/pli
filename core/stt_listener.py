@@ -7,7 +7,7 @@ All rights reserved.
 
 使い方:
     listener = STTListener(stt_engine)
-    listener.on_result = lambda text, lang: print(f"[{lang}] {text}")
+    listener.on_result = handle_result   # (text, lang) を受け取る
     listener.start()
     ...
     listener.stop()
@@ -23,6 +23,10 @@ import tempfile
 import threading
 from typing import Callable, Optional
 from enum import Enum
+
+from core.logging_setup import get_logger
+
+logger = get_logger(__name__)
 
 
 class ListenerState(Enum):
@@ -120,7 +124,7 @@ class STTListener:
         # 既にキャリブレーション済みなら閾値を再計算
         if self._ambient_energy > 0:
             self._energy_threshold = max(200, self._ambient_energy * self._sensitivity_multiplier)
-            print(f"[STT] 感度変更: {preset} → 閾値={self._energy_threshold:.0f}")
+            logger.info("STT感度変更: %s → 閾値=%.0f", preset, self._energy_threshold)
 
     def set_tempo(self, preset: str):
         """発話テンポプリセット: slow(ゆっくり) / normal(標準) / fast(早口)"""
@@ -135,7 +139,8 @@ class STTListener:
         p = presets[preset]
         self._silence_duration = p["silence"]
         self._min_speech_duration = p["min_speech"]
-        print(f"[STT] テンポ変更: {preset} → 無音={self._silence_duration}秒, 最小発話={self._min_speech_duration}秒")
+        logger.info("STTテンポ変更: %s → 無音=%s秒, 最小発話=%s秒",
+                    preset, self._silence_duration, self._min_speech_duration)
 
     def start(self):
         """リスニング開始"""
@@ -172,9 +177,10 @@ class STTListener:
                 self._ambient_energy = avg
                 # 閾値 = 環境ノイズ × 感度倍率（最低200）
                 self._energy_threshold = max(200, avg * self._sensitivity_multiplier)
-                print(f"[STT] 環境ノイズ: {avg:.0f}, 閾値: {self._energy_threshold:.0f} (×{self._sensitivity_multiplier})")
+                logger.info("STT環境ノイズ: %.0f, 閾値: %.0f (×%s)",
+                            avg, self._energy_threshold, self._sensitivity_multiplier)
         except Exception as e:
-            print(f"[STT] キャリブレーション失敗: {e}")
+            logger.warning("STTキャリブレーション失敗: %s", e)
 
     def _set_state(self, state: ListenerState):
         if self.state != state:
@@ -229,7 +235,7 @@ class STTListener:
             # 権限拒否/デバイス無しを分類し、構造化エラーとしてUIに渡す
             code = classify_mic_error(e)
             self.last_error = code if code else f"マイクを開けません: {e}"
-            print(f"[STT] マイク起動失敗 ({code or 'unknown'}): {e}")
+            logger.error("STTマイク起動失敗 (%s): %s", code or "unknown", e)
             if self.on_error:
                 self.on_error(self.last_error)
             return
@@ -249,7 +255,8 @@ class STTListener:
                     avg = sum(energies) / len(energies)
                     self._ambient_energy = avg
                     self._energy_threshold = max(200, avg * self._sensitivity_multiplier)
-                    print(f"[STT] 自動キャリブレーション: ノイズ={avg:.0f}, 閾値={self._energy_threshold:.0f} (×{self._sensitivity_multiplier})")
+                    logger.info("STT自動キャリブレーション: ノイズ=%.0f, 閾値=%.0f (×%s)",
+                                avg, self._energy_threshold, self._sensitivity_multiplier)
 
             self._set_state(ListenerState.IDLE)
             speech_buffer: list[bytes] = []
@@ -344,7 +351,9 @@ class STTListener:
             t2 = time.time()
             text = text.strip()
 
-            print(f"[STT] 音声={duration_sec:.1f}秒 Whisper={t2-t1:.2f}秒 lang={lang} text={text[:40]}")
+            # 秘匿: 認識テキスト本文はログに書かない（長さ・言語・所要時間のみ）
+            logger.debug("STT 音声=%.1f秒 Whisper=%.2f秒 lang=%s text_len=%d",
+                         duration_sec, t2 - t1, lang, len(text))
 
             # --- Whisper幻覚フィルタ ---
             # ノイズからWhisperが生成しがちな定型幻覚を除外
@@ -365,7 +374,9 @@ class STTListener:
                 or duration_sec < 0.3  # 0.3秒未満の音声はノイズ
             )
             if is_hallucination:
-                print(f"[STT] 幻覚フィルタ除外: '{text}' (音声={duration_sec:.1f}秒)")
+                # 秘匿: 除外テキスト本文もログに書かない（誤判定なら発話の可能性）
+                logger.debug("STT幻覚フィルタ除外 text_len=%d (音声=%.1f秒)",
+                             len(text), duration_sec)
             elif self.on_result:
                 self.on_result(text, lang)
 

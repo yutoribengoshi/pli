@@ -10,8 +10,11 @@ import time
 import threading
 from typing import Callable, Optional
 
+from core.logging_setup import get_logger
 from core.models import SyntaxChunk, TranslationResult
 from core.engines.nllb import NLLBEngine
+
+logger = get_logger(__name__)
 
 
 class HybridEngine:
@@ -87,7 +90,7 @@ class HybridEngine:
                     tokenizer = MarianTokenizer.from_pretrained(model_dir)
                     self._mul_models[direction] = translator
                     self._mul_tokenizers[direction] = tokenizer
-                    print(f"[hybrid] マルチリンガル CTranslate2 ロード完了: {direction}")
+                    logger.info("hybrid: マルチリンガル CTranslate2 ロード完了: %s", direction)
                     return True
                 else:
                     from transformers import MarianMTModel, MarianTokenizer
@@ -95,10 +98,10 @@ class HybridEngine:
                     model = MarianMTModel.from_pretrained(model_dir)
                     self._mul_models[direction] = model
                     self._mul_tokenizers[direction] = tokenizer
-                    print(f"[hybrid] マルチリンガル HuggingFace ロード完了: {direction}")
+                    logger.info("hybrid: マルチリンガル HuggingFace ロード完了: %s", direction)
                     return True
             except Exception as e:
-                print(f"[hybrid] マルチリンガル ロード失敗 ({direction}): {e}")
+                logger.warning("hybrid: マルチリンガル ロード失敗 (%s): %s", direction, e)
                 return False
 
     def _translate_multilingual(self, direction: str, text: str,
@@ -167,7 +170,7 @@ class HybridEngine:
                     tokenizer = self._load_opus_tokenizer(model_dir)
                     self._opus_models[pair_key] = translator
                     self._opus_tokenizers[pair_key] = tokenizer
-                    print(f"[hybrid] OPUS-MT CTranslate2 ロード完了: {pair_key}")
+                    logger.info("hybrid: OPUS-MT CTranslate2 ロード完了: %s", pair_key)
                     return True
                 else:
                     # HuggingFace形式 → transformers pipeline
@@ -176,10 +179,10 @@ class HybridEngine:
                     model = MarianMTModel.from_pretrained(model_dir)
                     self._opus_models[pair_key] = model
                     self._opus_tokenizers[pair_key] = tokenizer
-                    print(f"[hybrid] OPUS-MT HuggingFace ロード完了: {pair_key}")
+                    logger.info("hybrid: OPUS-MT HuggingFace ロード完了: %s", pair_key)
                     return True
             except Exception as e:
-                print(f"[hybrid] OPUS-MT ロード失敗 ({pair_key}): {e}")
+                logger.warning("hybrid: OPUS-MT ロード失敗 (%s): %s", pair_key, e)
                 return False
 
     def _load_opus_tokenizer(self, model_dir: str):
@@ -194,9 +197,9 @@ class HybridEngine:
         if self._nllb_model_dir and os.path.isdir(self._nllb_model_dir):
             self._nllb_engine = NLLBEngine(self._nllb_model_dir)
             self._nllb_engine._ensure_loaded()
-            print("[hybrid] NLLB フォールバックエンジン ロード完了")
+            logger.info("hybrid: NLLB フォールバックエンジン ロード完了")
         else:
-            print("[hybrid] NLLB モデルディレクトリなし — OPUS-MTのみで動作")
+            logger.warning("hybrid: NLLB モデルディレクトリなし — OPUS-MTのみで動作")
 
     def load_model_async(self, on_done: Optional[Callable] = None):
         """主要ペアの事前ロード + マルチリンガル + NLLBフォールバック"""
@@ -282,13 +285,13 @@ class HybridEngine:
         try:
             from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
             model_name = "facebook/nllb-200-distilled-600M"
-            print(f"[hybrid] NLLB HuggingFace ロード中: {model_name}")
+            logger.info("hybrid: NLLB HuggingFace ロード中: %s", model_name)
             self._nllb_hf_tokenizer = AutoTokenizer.from_pretrained(model_name)
             self._nllb_hf_model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
-            print(f"[hybrid] NLLB HuggingFace ロード完了")
+            logger.info("hybrid: NLLB HuggingFace ロード完了")
             return True
         except Exception as e:
-            print(f"[hybrid] NLLB HuggingFace ロード失敗: {e}")
+            logger.warning("hybrid: NLLB HuggingFace ロード失敗: %s", e)
             return False
 
     def _translate_nllb_hf(self, text: str, src_lang: str, tgt_lang: str) -> str:
@@ -351,11 +354,11 @@ class HybridEngine:
             try:
                 result = self._translate_nllb_hf(text, src_lang, tgt_lang)
                 route = f"NLLB直接 ({src_lang}→{tgt_lang})"
-                print(f"[hybrid] {route}")
+                logger.debug("hybrid: %s", route)
                 # 直接翻訳: 中間文なし（ピボット翻訳時のみ英語中間文を表示）
                 return _result(result, "", route)
             except Exception as e:
-                print(f"[hybrid] NLLB HF翻訳失敗: {e}")
+                logger.warning("hybrid: NLLB HF翻訳失敗: %s", e)
         elif self._ensure_opus_loaded(src_lang, tgt_lang):
             try:
                 import ctranslate2
@@ -365,11 +368,11 @@ class HybridEngine:
                 else:
                     result = self._translate_opus_hf(pair_key, text)
                 route = f"OPUS-MT直接 ({pair_key})"
-                print(f"[hybrid] {route}")
+                logger.debug("hybrid: %s", route)
                 # 直接翻訳: 中間文なし（ピボット翻訳時のみ英語中間文を表示）
                 return _result(result, "", route)
             except Exception as e:
-                print(f"[hybrid] OPUS-MT翻訳失敗 ({pair_key}): {e}")
+                logger.warning("hybrid: OPUS-MT翻訳失敗 (%s): %s", pair_key, e)
 
         # --- Stage 2: OPUS-MT 2段階 (en経由) ---
         if src_lang == "ja" and tgt_lang not in ("en",):
@@ -378,20 +381,20 @@ class HybridEngine:
                     en_text = self._do_opus_translate("ja", "en", text)
                     result = self._do_opus_translate("en", tgt_lang, en_text)
                     route = f"OPUS-MT 2段階 (ja→en→{tgt_lang})"
-                    print(f"[hybrid] {route}")
+                    logger.debug("hybrid: %s", route)
                     return _result(result, en_text, route)
                 except Exception as e:
-                    print(f"[hybrid] 2段階翻訳失敗: {e}")
+                    logger.warning("hybrid: 2段階翻訳失敗: %s", e)
         elif tgt_lang == "ja" and src_lang not in ("en",):
             if self._has_opus_pair(src_lang, "en") and self._has_opus_pair("en", "ja"):
                 try:
                     en_text = self._do_opus_translate(src_lang, "en", text)
                     result = self._do_opus_translate("en", "ja", en_text)
                     route = f"OPUS-MT 2段階 ({src_lang}→en→ja)"
-                    print(f"[hybrid] {route}")
+                    logger.debug("hybrid: %s", route)
                     return _result(result, en_text, route)
                 except Exception as e:
-                    print(f"[hybrid] 2段階翻訳失敗: {e}")
+                    logger.warning("hybrid: 2段階翻訳失敗: %s", e)
 
         # --- Stage 3: マルチリンガルOPUS-MT（少数言語対応） ---
         try:
@@ -408,10 +411,10 @@ class HybridEngine:
             try:
                 result = self._translate_multilingual("mul-en", text)
                 route = f"mul-en ({src_lang}→en)"
-                print(f"[hybrid] {route}")
+                logger.debug("hybrid: %s", route)
                 return _result(result, result, route)
             except Exception as e:
-                print(f"[hybrid] mul-en翻訳失敗: {e}")
+                logger.warning("hybrid: mul-en翻訳失敗: %s", e)
 
         # 3b: en-mul → 少数言語
         if (src_lang == "en" and tgt_token
@@ -419,10 +422,10 @@ class HybridEngine:
             try:
                 result = self._translate_multilingual("en-mul", text, tgt_token=tgt_token)
                 route = f"en-mul (en→{tgt_lang})"
-                print(f"[hybrid] {route}")
+                logger.debug("hybrid: %s", route)
                 return _result(result, text, route)
             except Exception as e:
-                print(f"[hybrid] en-mul翻訳失敗: {e}")
+                logger.warning("hybrid: en-mul翻訳失敗: %s", e)
 
         # 3c: mul-en + OPUS-MT
         if (src_lang != "en" and tgt_lang != "en" and src_token
@@ -433,10 +436,10 @@ class HybridEngine:
                 self._ensure_opus_loaded("en", tgt_lang)
                 result = self._do_opus_translate("en", tgt_lang, en_text)
                 route = f"mul-en→OPUS-MT ({src_lang}→en→{tgt_lang})"
-                print(f"[hybrid] {route}")
+                logger.debug("hybrid: %s", route)
                 return _result(result, en_text, route)
             except Exception as e:
-                print(f"[hybrid] マルチリンガルピボット失敗: {e}")
+                logger.warning("hybrid: マルチリンガルピボット失敗: %s", e)
 
         # 3d: OPUS-MT + en-mul
         if (src_lang != "en" and tgt_lang != "en" and tgt_token
@@ -447,10 +450,10 @@ class HybridEngine:
                 en_text = self._do_opus_translate(src_lang, "en", text)
                 result = self._translate_multilingual("en-mul", en_text, tgt_token=tgt_token)
                 route = f"OPUS-MT→en-mul ({src_lang}→en→{tgt_lang})"
-                print(f"[hybrid] {route}")
+                logger.debug("hybrid: %s", route)
                 return _result(result, en_text, route)
             except Exception as e:
-                print(f"[hybrid] マルチリンガルピボット失敗: {e}")
+                logger.warning("hybrid: マルチリンガルピボット失敗: %s", e)
 
         # 3e: mul-en + en-mul
         if (src_lang != "en" and tgt_lang != "en"
@@ -461,10 +464,10 @@ class HybridEngine:
                 en_text = self._translate_multilingual("mul-en", text)
                 result = self._translate_multilingual("en-mul", en_text, tgt_token=tgt_token)
                 route = f"mul-en→en-mul ({src_lang}→en→{tgt_lang})"
-                print(f"[hybrid] {route}")
+                logger.debug("hybrid: %s", route)
                 return _result(result, en_text, route)
             except Exception as e:
-                print(f"[hybrid] フルマルチリンガル失敗: {e}")
+                logger.warning("hybrid: フルマルチリンガル失敗: %s", e)
 
         # --- Stage 4: NLLBフォールバック ---
         self._ensure_nllb_loaded()
@@ -477,10 +480,10 @@ class HybridEngine:
                     self._ensure_opus_loaded("en", tgt_lang)
                     result = self._do_opus_translate("en", tgt_lang, en_text)
                     route = f"NLLB→OPUS-MT ({src_lang}→en→{tgt_lang})"
-                    print(f"[hybrid] {route}")
+                    logger.debug("hybrid: %s", route)
                     return _result(result, en_text, route)
                 except Exception as e:
-                    print(f"[hybrid] NLLBピボット失敗: {e}")
+                    logger.warning("hybrid: NLLBピボット失敗: %s", e)
 
             # B: OPUS-MT src→en + NLLB en→tgt
             if (src_lang != "en" and tgt_lang != "en"
@@ -490,14 +493,14 @@ class HybridEngine:
                     en_text = self._do_opus_translate(src_lang, "en", text)
                     result = self._nllb_engine.translate(en_text, "en", tgt_lang)
                     route = f"OPUS-MT→NLLB ({src_lang}→en→{tgt_lang})"
-                    print(f"[hybrid] {route}")
+                    logger.debug("hybrid: %s", route)
                     return _result(result, en_text, route)
                 except Exception as e:
-                    print(f"[hybrid] NLLBピボット失敗: {e}")
+                    logger.warning("hybrid: NLLBピボット失敗: %s", e)
 
             # C: NLLB直接
             route = f"NLLB直接 ({src_lang}→{tgt_lang})"
-            print(f"[hybrid] {route}")
+            logger.debug("hybrid: %s", route)
             result = self._nllb_engine.translate(text, src_lang, tgt_lang)
             return _result(result, "", route)
 

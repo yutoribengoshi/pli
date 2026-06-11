@@ -14,7 +14,10 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from core.interpreter import Interpreter, Utterance, Speaker, detect_unknown_words
+from core.logging_setup import get_logger
 from core.recorder import Recorder, RecordMode
+
+logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -190,11 +193,13 @@ class SessionController:
             timestamp=time.strftime("%H:%M"),
         )
         tgt = self.interpreter.target_lang
-        print(f"[ATT-TRANSLATE] start: text={text[:30]}, tgt={tgt}")
+        # 秘匿: 発話本文はログに書かない（長さ・言語のみ）
+        logger.debug("attorney翻訳開始 len=%d tgt=%s", len(text), tgt)
 
         processed_text, glossary_map = self.interpreter._glossary_pre_ja_to_foreign(text)
         if glossary_map:
-            print(f"[ATT-TRANSLATE] glossary前処理: {processed_text}")
+            logger.debug("attorney glossary前処理: %d件置換 out_len=%d",
+                         len(glossary_map), len(processed_text))
 
         if hasattr(self.interpreter.engine, "translate_detail"):
             result = self.interpreter.engine.translate_detail(processed_text, "ja", tgt)
@@ -211,7 +216,8 @@ class SessionController:
             raw = self.interpreter._glossary_post_ja_to_foreign(raw, glossary_map)
             utt.translated = raw
 
-        print(f"[ATT-TRANSLATE] done: translated={utt.translated[:50]}")
+        # 秘匿: 訳文本文はログに書かない
+        logger.debug("attorney翻訳完了 translated_len=%d", len(utt.translated))
         return utt
 
     def _translation_worker_loop(self):
@@ -244,13 +250,13 @@ class SessionController:
                             translated=f"(翻訳エラー: {job.text})",
                             timestamp=time.strftime("%H:%M"),
                         )
-                        print(f"[DEF-TRANSLATE] ERROR: {e}")
+                        logger.error("defendant翻訳エラー: %s", e)
                     if not self.is_translation_job_active(job):
                         continue
                     if self._cb_defendant_translated:
                         self._cb_defendant_translated(utt)
                 else:
-                    print(f"[warn] 不明な翻訳ジョブ種別: {job.kind}")
+                    logger.warning("不明な翻訳ジョブ種別: %s", job.kind)
             except Exception as e:
                 if not isinstance(job, TranslationJob) or not self.is_translation_job_active(job):
                     continue
@@ -399,13 +405,15 @@ class SessionController:
                     if unicodedata.name(c, "").startswith(("CJK", "HIRAGANA", "KATAKANA"))
                 )
                 is_attorney = (ja_chars / max(len(text), 1)) > 0.3
-            print(f"[STT-AUTO] lang={lang}, target={tgt}, is_attorney={is_attorney}, text={text[:30]}")
+            # 秘匿: 認識テキスト本文はログに書かない
+            logger.debug("STT自動判定 lang=%s target=%s is_attorney=%s len=%d",
+                         lang, tgt, is_attorney, len(text))
 
         if is_attorney:
-            print(f"[STT] -> attorney speech: {text[:40]}")
+            logger.debug("STT -> attorney speech len=%d", len(text))
             self.process_attorney_speech(text)
         else:
-            print(f"[STT] -> defendant speech: {text[:40]}")
+            logger.debug("STT -> defendant speech len=%d", len(text))
             self.process_defendant_speech(text)
 
     def on_stt_state_change(self, state_name: str):

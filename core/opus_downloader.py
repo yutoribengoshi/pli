@@ -12,6 +12,10 @@ import os
 import shutil
 from typing import Callable, Optional
 
+from core.logging_setup import get_logger
+
+logger = get_logger(__name__)
+
 
 class DiskSpaceError(RuntimeError):
     """ディスク空き容量不足エラー（ダウンロード前チェックで送出）"""
@@ -431,7 +435,7 @@ def download_model(
             "（ダウンロードコンポーネントが見つかりません）。"
         )
 
-    print(f"[opus] モデルをダウンロード中: {info['repo']}")
+    logger.info("opus: モデルをダウンロード中: %s", info["repo"])
     snapshot_download(
         repo_id=info["repo"],
         local_dir=dest,
@@ -453,7 +457,7 @@ def download_model(
     if on_progress:
         on_progress(1.0)
 
-    print(f"[opus] 完了: {dest}")
+    logger.info("opus: 完了: %s", dest)
     return dest
 
 
@@ -463,12 +467,12 @@ def _convert_to_ct2(model_dir: str,
     try:
         import ctranslate2
     except ImportError:
-        print("[opus] ctranslate2 未インストール — HuggingFace形式のまま使用")
+        logger.warning("opus: ctranslate2 未インストール — HuggingFace形式のまま使用")
         return
 
     ct2_dir = model_dir + "_ct2_tmp"
     try:
-        print(f"[opus] CTranslate2変換中: {model_dir}")
+        logger.info("opus: CTranslate2変換中: %s", model_dir)
         converter = ctranslate2.converters.OpusMTConverter(model_dir)
         converter.convert(ct2_dir, quantization="int8")
 
@@ -484,9 +488,9 @@ def _convert_to_ct2(model_dir: str,
                 shutil.move(src, dst)
         shutil.rmtree(ct2_dir, ignore_errors=True)
 
-        print("[opus] CTranslate2変換完了")
+        logger.info("opus: CTranslate2変換完了")
     except Exception as e:
-        print(f"[opus] CTranslate2変換失敗（HuggingFace形式で使用）: {e}")
+        logger.warning("opus: CTranslate2変換失敗（HuggingFace形式で使用）: %s", e)
         import shutil
         shutil.rmtree(ct2_dir, ignore_errors=True)
 
@@ -531,7 +535,7 @@ def download_pairs_for_lang(
             # 容量不足は以降のペアも全て失敗するため、握り潰さず中断して通知
             raise
         except Exception as e:
-            print(f"[opus] {pair_key} ダウンロード失敗: {e}")
+            logger.error("opus: %s ダウンロード失敗: %s", pair_key, e)
     return done
 
 

@@ -21,11 +21,14 @@ __license__ = "Proprietary"
 import sys
 import os
 import argparse
+import threading
+import traceback
 from pathlib import Path
 
 from PySide6.QtWidgets import QApplication, QMessageBox, QProgressDialog
 from PySide6.QtCore import Qt, QTimer, QObject, Signal
 
+from core.logging_setup import setup_logging, get_logger
 from core.version import __version__  # noqa: F401  バージョン単一ソース
 from core.interpreter import Interpreter, EngineType
 from core.whisper_stt import whisper_model_downloaded, download_whisper_model
@@ -34,6 +37,45 @@ from core.hide_mode import HideMode, HideSettings
 from core.stt_listener import STTListener, ListenerState
 from ui.attorney_window import AttorneyWindow
 from ui.defendant_window import DefendantWindow
+
+logger = get_logger(__name__)
+
+_CRASH_MESSAGE = (
+    "予期しないエラーが発生しました。\n"
+    "ログフォルダのpli.logを添えて開発者にご連絡ください。"
+)
+
+
+def _install_excepthooks():
+    """クラッシュ可視化: 未捕捉例外をログに記録し、可能ならダイアログ表示。
+
+    - メインスレッド: logger.critical + QMessageBox（QApplication 起動済みの場合のみ）
+    - ワーカースレッド: logger.critical のみ（ダイアログは出さない）
+    """
+
+    def _handle_exception(exc_type, exc_value, exc_tb):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_tb)
+            return
+        tb_text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        logger.critical("未捕捉例外:\n%s", tb_text)
+        try:
+            if QApplication.instance() is not None:
+                QMessageBox.critical(None, "PLI - エラー", _CRASH_MESSAGE)
+        except Exception:
+            # ダイアログ表示自体の失敗でクラッシュ処理を壊さない
+            pass
+
+    def _handle_thread_exception(args):
+        if issubclass(args.exc_type, SystemExit):
+            return
+        tb_text = "".join(traceback.format_exception(
+            args.exc_type, args.exc_value, args.exc_traceback))
+        name = args.thread.name if args.thread else "unknown"
+        logger.critical("ワーカースレッド未捕捉例外 (%s):\n%s", name, tb_text)
+
+    sys.excepthook = _handle_exception
+    threading.excepthook = _handle_thread_exception
 
 
 class _ThreadBridge(QObject):
@@ -210,10 +252,10 @@ class PLIApp:
             # STTエンジンが最新のものを使う（モデルロード完了後）
             self.stt_listener.stt = self.interpreter.stt
             self.stt_listener.start()
-            print("[STT] リスナー開始")
+            logger.info("STTリスナー開始")
         else:
             self.stt_listener.stop()
-            print("[STT] リスナー停止")
+            logger.info("STTリスナー停止")
 
     def _on_hide(self, settings: HideSettings):
         """ハイドモード発動時"""
@@ -290,34 +332,34 @@ class PLIApp:
             try:
                 with open(os.path.join(config_dir, "last_model.txt"), "w") as f:
                     f.write(model_path)
-                print(f"[info] モデル設定を保存: {os.path.basename(model_path)}")
+                logger.info("モデル設定を保存: %s", os.path.basename(model_path))
             except Exception as e:
-                print(f"[warn] モデル設定の保存に失敗: {e}")
+                logger.warning("モデル設定の保存に失敗: %s", e)
         if n_ctx:
             try:
                 with open(os.path.join(config_dir, "last_n_ctx.txt"), "w") as f:
                     f.write(str(n_ctx))
-                print(f"[info] コンテキスト長を保存: {n_ctx}")
+                logger.info("コンテキスト長を保存: %s", n_ctx)
             except Exception as e:
-                print(f"[warn] コンテキスト長の保存に失敗: {e}")
+                logger.warning("コンテキスト長の保存に失敗: %s", e)
         if engine_type:
             try:
                 with open(os.path.join(config_dir, "last_engine.txt"), "w") as f:
                     f.write(engine_type)
-                print(f"[info] エンジン設定を保存: {engine_type}")
+                logger.info("エンジン設定を保存: %s", engine_type)
             except Exception as e:
-                print(f"[warn] エンジン設定の保存に失敗: {e}")
+                logger.warning("エンジン設定の保存に失敗: %s", e)
         if nllb_model_key:
             try:
                 with open(os.path.join(config_dir, "last_nllb_model.txt"), "w") as f:
                     f.write(nllb_model_key)
-                print(f"[info] NLLBモデル設定を保存: {nllb_model_key}")
+                logger.info("NLLBモデル設定を保存: %s", nllb_model_key)
             except Exception as e:
-                print(f"[warn] NLLBモデル設定の保存に失敗: {e}")
+                logger.warning("NLLBモデル設定の保存に失敗: %s", e)
 
     def _restart_app(self, model_path: str = None, n_ctx: int = None):
         """アプリを再起動"""
-        print("[info] 設定変更のためアプリを再起動します...")
+        logger.info("設定変更のためアプリを再起動します")
         import subprocess
         model_path = model_path or self.interpreter._model_path or ""
         n_ctx = self._n_ctx if n_ctx is None else n_ctx
@@ -392,31 +434,29 @@ class PLIApp:
             "switch":  "切替(F3で全画面切替)",
         }.get(self._effective_mode, self._effective_mode)
 
-        print("=" * 50)
-        print("  PLI - Private Link Interpreter")
-        print(f"  モード: {'モック（テスト用）' if self.interpreter.mock else '実モデル'}")
+        logger.info("PLI - Private Link Interpreter 起動")
+        logger.info("モード: %s",
+                    "モック（テスト用）" if self.interpreter.mock else "実モデル")
         if not self.interpreter.mock:
             if self._engine_type_str == "hybrid":
                 nllb_name = os.path.basename(self._nllb_model_dir) if self._nllb_model_dir else "(なし)"
-                print(f"  エンジン: ⚡ ハイブリッド (OPUS-MT + NLLB)")
-                print(f"  NLLBフォールバック: {nllb_name}")
+                logger.info("エンジン: ハイブリッド (OPUS-MT + NLLB)")
+                logger.info("NLLBフォールバック: %s", nllb_name)
                 try:
                     from core.opus_downloader import list_downloaded
                     dl = list_downloaded()
-                    print(f"  OPUS-MTペア: {len(dl)} ダウンロード済み")
+                    logger.info("OPUS-MTペア: %d ダウンロード済み", len(dl))
                 except ImportError:
                     pass
             elif self._engine_type_str == "nllb":
                 nllb_name = os.path.basename(self._nllb_model_dir) if self._nllb_model_dir else "?"
-                print(f"  エンジン: NLLB (CTranslate2 軽量)")
-                print(f"  モデル: {nllb_name}")
+                logger.info("エンジン: NLLB (CTranslate2 軽量)")
+                logger.info("モデル: %s", nllb_name)
             elif self.interpreter._model_path:
                 model_name = os.path.splitext(os.path.basename(self.interpreter._model_path))[0]
-                print(f"  エンジン: LLM (llama.cpp)")
-                print(f"  モデル: {model_name}  (n_ctx={self._n_ctx})")
-        print(f"  表示: {mode_label}")
-        print("  ⌘1: ハイドモード  ⌘2: パニック  ⌘3: 相手画面切替")
-        print("=" * 50)
+                logger.info("エンジン: LLM (llama.cpp)")
+                logger.info("モデル: %s (n_ctx=%d)", model_name, self._n_ctx)
+        logger.info("表示: %s", mode_label)
 
         # GUI表示後にモデルをバックグラウンドロード
         # モック時もSTT(Whisper)だけはロードする
@@ -480,9 +520,9 @@ class PLIApp:
             self._whisper_dl_dialog.close()
             self._whisper_dl_dialog = None
         if ok:
-            print("[info] Whisperモデルのダウンロード完了")
+            logger.info("Whisperモデルのダウンロード完了")
         else:
-            print(f"[warn] Whisperモデルのダウンロード失敗: {message}")
+            logger.warning("Whisperモデルのダウンロード失敗: %s", message)
             QMessageBox.warning(
                 self.attorney,
                 "ダウンロード失敗",
@@ -502,7 +542,7 @@ class PLIApp:
         self._loading_message = ""
 
         def on_ready(ready: bool, message: str):
-            print("[info] on_ready コールバック発火")
+            logger.info("on_ready コールバック発火")
             if self.interpreter.stt_ready:
                 self.stt_listener.stt = self.interpreter.stt
             self._loading_ready = ready
@@ -528,7 +568,7 @@ class PLIApp:
                     ready=self._loading_ready,
                     message=self._loading_message,
                 )
-                print("[info] set_loading_state(False) 実行")
+                logger.info("set_loading_state(False) 実行")
         self._model_poll_timer.timeout.connect(_check_loading)
         self._model_poll_timer.start(200)
 
@@ -536,6 +576,13 @@ class PLIApp:
 
 
 def main():
+    # ログ基盤を最初に初期化（以降の全処理がログに残る）
+    setup_logging()
+    logger.info("PLI v%s 起動 (python=%s, frozen=%s)",
+                __version__, sys.version.split()[0],
+                getattr(sys, "frozen", False))
+    _install_excepthooks()
+
     parser = argparse.ArgumentParser(description="PLI - Private Link Interpreter")
     parser.add_argument("--real", action="store_true", help="実モデルで起動")
     parser.add_argument("--model", type=str, default="", help="LLMモデルのパス")
@@ -569,7 +616,7 @@ def main():
                 saved_engine = Path(engine_cfg).read_text().strip()
                 if saved_engine in ("llm", "nllb", "hybrid"):
                     engine_type = saved_engine
-                    print(f"[info] 前回のエンジンを使用: {engine_type}")
+                    logger.info("前回のエンジンを使用: %s", engine_type)
             except OSError:
                 pass
         if engine_type == "auto":
@@ -586,7 +633,7 @@ def main():
                     saved_key = Path(nllb_cfg).read_text().strip()
                     if saved_key and is_downloaded(saved_key):
                         nllb_model_dir = get_model_dir(saved_key)
-                        print(f"[info] 前回のNLLBモデルを使用: {saved_key}")
+                        logger.info("前回のNLLBモデルを使用: %s", saved_key)
                 except (ImportError, OSError):
                     pass
 
@@ -597,14 +644,14 @@ def main():
                     downloaded = list_downloaded()
                     if downloaded:
                         nllb_model_dir = get_model_dir(downloaded[0])
-                        print(f"[info] 検出NLLBモデル: {downloaded[0]}")
+                        logger.info("検出NLLBモデル: %s", downloaded[0])
                 except ImportError:
                     pass
 
             if not nllb_model_dir:
-                print("[error] NLLBモデルが見つかりません")
-                print("[info] アプリ内のメニューからNLLBモデルをダウンロードしてください")
-                print("[info] LLMモードに切り替えます...")
+                logger.error("NLLBモデルが見つかりません")
+                logger.info("アプリ内のメニューからNLLBモデルをダウンロードしてください")
+                logger.info("LLMモードに切り替えます")
                 engine_type = "llm"
 
     # --- ハイブリッドモード ---
@@ -618,7 +665,7 @@ def main():
                     saved_key = Path(nllb_cfg).read_text().strip()
                     if saved_key and is_downloaded(saved_key):
                         nllb_model_dir = get_model_dir(saved_key)
-                        print(f"[info] NLLBフォールバック: {saved_key}")
+                        logger.info("NLLBフォールバック: %s", saved_key)
                 except (ImportError, OSError):
                     pass
             if not nllb_model_dir:
@@ -627,11 +674,11 @@ def main():
                     downloaded = list_downloaded()
                     if downloaded:
                         nllb_model_dir = get_model_dir(downloaded[0])
-                        print(f"[info] NLLBフォールバック検出: {downloaded[0]}")
+                        logger.info("NLLBフォールバック検出: %s", downloaded[0])
                 except ImportError:
                     pass
             if not nllb_model_dir:
-                print("[warn] NLLBフォールバックモデルなし — OPUS-MTのみで動作します")
+                logger.warning("NLLBフォールバックモデルなし — OPUS-MTのみで動作します")
 
     # --- LLMモード ---
     if engine_type == "llm":
@@ -643,7 +690,7 @@ def main():
                     saved = f.read().strip()
                 if saved and os.path.exists(saved):
                     model_path = saved
-                    print(f"[info] 前回のモデルを使用: {os.path.basename(model_path)}")
+                    logger.info("前回のモデルを使用: %s", os.path.basename(model_path))
 
             # フォールバック: ~/pli-models/ 内の最初の .gguf
             if not model_path:
@@ -652,12 +699,12 @@ def main():
                 gguf_files = sorted(glob.glob(os.path.join(models_dir, "*.gguf")))
                 if gguf_files:
                     model_path = gguf_files[0]
-                    print(f"[info] 検出モデル: {os.path.basename(model_path)}")
+                    logger.info("検出モデル: %s", os.path.basename(model_path))
 
             if not model_path or not os.path.exists(model_path):
-                print("[error] LLMモデルが見つかりません")
-                print("[info] ~/pli-models/ にGGUFモデルを配置するか、--model でパスを指定してください")
-                print("[info] モックモードで起動するには --real を外してください")
+                logger.error("LLMモデルが見つかりません")
+                logger.info("~/pli-models/ にGGUFモデルを配置するか、--model でパスを指定してください")
+                logger.info("モックモードで起動するには --real を外してください")
                 sys.exit(1)
 
         # n_ctx 自動判定
@@ -666,12 +713,12 @@ def main():
             if os.path.exists(ctx_cfg):
                 try:
                     n_ctx = int(Path(ctx_cfg).read_text().strip())
-                    print(f"[info] 前回のコンテキスト長を使用: {n_ctx}")
+                    logger.info("前回のコンテキスト長を使用: %d", n_ctx)
                 except (ValueError, OSError):
                     pass
             if n_ctx == 0:
                 n_ctx = _auto_n_ctx(model_path)
-                print(f"[info] コンテキスト長を自動設定: {n_ctx}")
+                logger.info("コンテキスト長を自動設定: %d", n_ctx)
 
     app = PLIApp(mock=mock, model_path=model_path, display_mode=args.display,
                  n_ctx=n_ctx, engine_type=engine_type, nllb_model_dir=nllb_model_dir,

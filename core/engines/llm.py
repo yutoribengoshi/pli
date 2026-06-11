@@ -9,6 +9,7 @@ import subprocess
 import threading
 from typing import Callable, Optional
 
+from core.logging_setup import get_logger
 from core.models import SyntaxChunk
 from core.lang_utils import (
     get_language_name,
@@ -16,6 +17,8 @@ from core.lang_utils import (
     make_syntax_check_system,
     RECONSTRUCT_SYSTEM,
 )
+
+logger = get_logger(__name__)
 
 
 class LLMEngine:
@@ -236,12 +239,12 @@ class LLMEngine:
             path = os.path.join(models_dir, tier["model"])
             if os.path.isfile(path):
                 self._n_ctx = tier["ctx_size"]
-                print(f"[llm] ティア検出: {tier['description']}")
+                logger.info("llm: ティア検出: %s", tier["description"])
                 return path
         # 既存の Qwen2.5-32B にフォールバック
         legacy = os.path.join(models_dir, "Qwen2.5-32B-Instruct-Q6_K.gguf")
         if os.path.isfile(legacy):
-            print("[llm] レガシーモデル検出: Qwen2.5-32B-Q6_K")
+            logger.info("llm: レガシーモデル検出: Qwen2.5-32B-Q6_K")
             return legacy
         return None
 
@@ -249,18 +252,18 @@ class LLMEngine:
         """llama-server をバックグラウンドで起動"""
         # 既にサーバーが応答するか確認
         if self._health_check():
-            print("[llm] 既存の llama-server に接続")
+            logger.info("llm: 既存の llama-server に接続")
             self._ready = True
             return True
 
         server_bin = self.find_llama_server()
         if not server_bin:
-            print("[llm] llama-server が見つかりません (brew install llama.cpp)")
+            logger.warning("llm: llama-server が見つかりません (brew install llama.cpp)")
             return False
 
         model_path = self._find_model_path()
         if not model_path:
-            print("[llm] LLMモデルファイルが見つかりません")
+            logger.warning("llm: LLMモデルファイルが見つかりません")
             return False
 
         # ティア情報からパラメータ取得
@@ -286,8 +289,9 @@ class LLMEngine:
         if gpu_layers > 0:
             cmd += ["--n-gpu-layers", str(gpu_layers)]
             cmd += ["--flash-attn"]                    # Flash Attention: GPUピークメモリ半減
-        print(f"[llm] ティア: {tier_name}, スレッド: {threads}, GPU層: {gpu_layers}")
-        print(f"[llm] llama-server 起動中: {os.path.basename(model_path)}")
+        logger.info("llm: ティア: %s, スレッド: %s, GPU層: %s",
+                    tier_name, threads, gpu_layers)
+        logger.info("llm: llama-server 起動中: %s", os.path.basename(model_path))
         try:
             self._server_process = subprocess.Popen(
                 cmd,
@@ -295,7 +299,7 @@ class LLMEngine:
                 stderr=subprocess.PIPE,
             )
         except Exception as e:
-            print(f"[llm] llama-server 起動失敗: {e}")
+            logger.error("llm: llama-server 起動失敗: %s", e)
             return False
 
         # サーバー起動待ち（最大60秒）
@@ -304,15 +308,15 @@ class LLMEngine:
             if self._server_process.poll() is not None:
                 stderr = self._server_process.stderr.read().decode(errors="replace")
                 self._server_process.stderr.close()
-                print(f"[llm] llama-server が異常終了: {stderr[:500]}")
+                logger.error("llm: llama-server が異常終了: %s", stderr[:500])
                 return False
             if self._health_check():
-                print(f"[llm] llama-server 起動完了 ({(i+1)*0.5:.1f}秒)")
+                logger.info("llm: llama-server 起動完了 (%.1f秒)", (i + 1) * 0.5)
                 self._ready = True
                 return True
             _time.sleep(0.5)
 
-        print("[llm] llama-server 起動タイムアウト (60秒)")
+        logger.error("llm: llama-server 起動タイムアウト (60秒)")
         self.stop_server()
         return False
 
@@ -328,7 +332,7 @@ class LLMEngine:
                 self._server_process.kill()
             self._server_process = None
             self._ready = False
-            print("[llm] llama-server 停止 → メモリ解放")
+            logger.info("llm: llama-server 停止 → メモリ解放")
 
     def _health_check(self) -> bool:
         """サーバーの到達性チェック"""
@@ -351,7 +355,7 @@ class LLMEngine:
                     # フォールバック: llama-cpp-python で直接ロード
                     model_path = self._find_model_path()
                     if model_path:
-                        print("[llm] llama-server 不可 → llama-cpp-python にフォールバック")
+                        logger.info("llm: llama-server 不可 → llama-cpp-python にフォールバック")
                         self._use_api = False
                         from llama_cpp import Llama
                         self._llm = Llama(
@@ -362,12 +366,12 @@ class LLMEngine:
                             verbose=False,
                         )
                         self._ready = True
-                        print(f"[info] LLMモデルのロード完了 (n_ctx={self._n_ctx})")
+                        logger.info("llm: LLMモデルのロード完了 (n_ctx=%d)", self._n_ctx)
                     else:
                         self._load_error = "モデルファイルが見つかりません"
             except Exception as e:
                 self._load_error = str(e)
-                print(f"[error] LLMロード失敗: {e}")
+                logger.error("llm: LLMロード失敗: %s", e)
             finally:
                 self._loading = False
                 if on_done:

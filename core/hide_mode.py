@@ -11,6 +11,10 @@ import subprocess
 from dataclasses import dataclass
 from typing import Optional, Callable
 
+from core.logging_setup import get_logger
+
+logger = get_logger(__name__)
+
 
 @dataclass
 class HideSettings:
@@ -94,7 +98,7 @@ class HideMode:
         try:
             self._set_process_visibility(False)
         except Exception as e:
-            print(f"[warn] hide_mode: {e}")
+            logger.warning("hide_mode: %s", e)
 
     def _show_in_dock(self):
         """Dockにアプリを復帰"""
@@ -103,7 +107,7 @@ class HideMode:
         try:
             self._set_process_visibility(True)
         except Exception as e:
-            print(f"[warn] hide_mode: {e}")
+            logger.warning("hide_mode: %s", e)
 
     def _set_process_visibility(self, visible: bool):
         names = self._candidate_process_names()
@@ -131,7 +135,7 @@ class HideMode:
             if app and app.applicationName():
                 names.append(app.applicationName())
         except Exception as e:
-            print(f"[warn] hide_mode: {e}")
+            logger.warning("hide_mode: %s", e)
 
         exe_name = os.path.splitext(os.path.basename(sys.executable))[0]
         if exe_name:
@@ -154,7 +158,7 @@ class HideMode:
                 subprocess.Popen(["explorer.exe", os.path.expanduser("~")])
                 self._dummy_mode = "explorer"
             except Exception as e:
-                print(f"[warn] hide_mode: {e}")
+                logger.warning("hide_mode: %s", e)
                 self._dummy_mode = ""
             return
 
@@ -169,7 +173,7 @@ class HideMode:
                 self._dummy_mode = "quicklook"
                 return
             except Exception as e:
-                print(f"[warn] hide_mode: {e}")
+                logger.warning("hide_mode: %s", e)
 
         # PDFが未設定、またはQuick Look起動に失敗した場合はFinderを前面に
         try:
@@ -180,7 +184,7 @@ class HideMode:
             )
             self._dummy_mode = "finder"
         except Exception as e:
-            print(f"[warn] hide_mode: {e}")
+            logger.warning("hide_mode: %s", e)
             self._dummy_mode = ""
 
     def _close_dummy(self):
@@ -190,10 +194,10 @@ class HideMode:
                 self._dummy_process.terminate()
                 self._dummy_process.wait(timeout=2)
             except Exception as e:
-                print(f"[warn] hide_mode: {e}")
+                logger.warning("hide_mode: %s", e)
                 try:
                     self._dummy_process.kill()
                 except Exception as e2:
-                    print(f"[warn] hide_mode: {e2}")
+                    logger.warning("hide_mode: %s", e2)
             self._dummy_process = None
         self._dummy_mode = ""

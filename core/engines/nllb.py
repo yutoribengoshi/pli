@@ -9,8 +9,11 @@ import time
 import threading
 from typing import Callable, Optional
 
+from core.logging_setup import get_logger
 from core.models import SyntaxChunk
 from core.lang_utils import NLLB_LANG_MAP
+
+logger = get_logger(__name__)
 
 
 class NLLBEngine:
@@ -55,10 +58,10 @@ class NLLBEngine:
                     compute_type="int8",
                     inter_threads=4,
                 )
-                print(f"[nllb] モデルロード完了: {self._model_dir}")
+                logger.info("nllb: モデルロード完了: %s", self._model_dir)
             except Exception as e:
                 self._load_error = str(e)
-                print(f"[nllb] モデルロード失敗: {e}")
+                logger.error("nllb: モデルロード失敗: %s", e)
 
     def load_model_async(self, on_done: Optional[Callable] = None):
         """バックグラウンドでモデルをロード"""

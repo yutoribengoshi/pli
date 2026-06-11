@@ -15,6 +15,10 @@ import threading
 from enum import Enum
 from typing import Optional
 
+from core.logging_setup import get_logger
+
+logger = get_logger(__name__)
+
 
 class RecordMode(Enum):
     OFF = "off"
@@ -81,7 +85,7 @@ class Recorder:
             stream.start()
         except Exception as e:
             self._error = "録音デバイスを初期化できません。マイク接続と権限を確認してください。"
-            print(f"[error] recorder: 録音開始失敗: {e}")
+            logger.error("recorder: 録音開始失敗: %s", e)
             return False
         self._stream = stream
         with self._buffer_lock:
@@ -111,7 +115,7 @@ class Recorder:
                 self._stream.stop()
                 self._stream.close()
             except Exception as e:
-                print(f"[error] recorder: close failed: {e}")
+                logger.error("recorder: close failed: %s", e)
             self._stream = None
         self._audio = None
 
@@ -128,7 +132,7 @@ class Recorder:
             if self._recording:
                 self._error = f"録音が中断されました: {e}"
                 self._recording = False
-                print(f"[error] recorder: {e}")
+                logger.error("recorder: %s", e)
         finally:
             self._close_audio_handles()
 

@@ -17,6 +17,9 @@ from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtGui import QFont
 
 from core.interpreter import Utterance, Speaker
+from core.logging_setup import get_logger
+
+logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # スタイル定数 — 平成初期レトロ（暖灰・紺・深緑）
@@ -346,7 +349,7 @@ class TranslationPanel(QWidget):
             try:
                 return self._load_phrases_docx(user_docx)
             except Exception as e:
-                print(f"[WARN] docx読込失敗, JSONにフォールバック: {e}")
+                logger.warning("docx読込失敗, JSONにフォールバック: %s", e)
         import json
         path = user_json if os.path.exists(user_json) else bundled_json
         try:

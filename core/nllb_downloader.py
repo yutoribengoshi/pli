@@ -9,6 +9,10 @@ import os
 import shutil
 from typing import Callable, Optional
 
+from core.logging_setup import get_logger
+
+logger = get_logger(__name__)
+
 
 class DiskSpaceError(RuntimeError):
     """ディスク空き容量不足エラー（ダウンロード前チェックで送出）"""
@@ -130,7 +134,7 @@ def download_model(
         on_progress(0.05)
 
     # CTranslate2 モデルをダウンロード
-    print(f"[nllb] モデルをダウンロード中: {info['repo']}")
+    logger.info("nllb: モデルをダウンロード中: %s", info["repo"])
     snapshot_download(
         repo_id=info["repo"],
         local_dir=dest,
@@ -144,7 +148,7 @@ def download_model(
     tokenizer_dir = os.path.join(dest, "tokenizer")
     os.makedirs(tokenizer_dir, exist_ok=True)
 
-    print(f"[nllb] トークナイザーをダウンロード中: {info['tokenizer_repo']}")
+    logger.info("nllb: トークナイザーをダウンロード中: %s", info["tokenizer_repo"])
     try:
         from transformers import AutoTokenizer
         tokenizer = AutoTokenizer.from_pretrained(info["tokenizer_repo"])
@@ -162,7 +166,7 @@ def download_model(
     if on_progress:
         on_progress(1.0)
 
-    print(f"[nllb] ダウンロード完了: {dest}")
+    logger.info("nllb: ダウンロード完了: %s", dest)
     return dest
 
 

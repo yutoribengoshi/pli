@@ -11,6 +11,8 @@ import threading
 import time
 from typing import Callable, Optional
 
+from core.logging_setup import get_logger
+
 # --- 分割モジュールからの再エクスポート（後方互換性維持） ---
 from core.models import EngineType, Speaker, TranslationResult, Utterance, SyntaxChunk  # noqa: F401
 from core.lang_utils import (  # noqa: F401
@@ -20,6 +22,8 @@ from core.lang_utils import (  # noqa: F401
 )
 from core.engines import MockEngine, LLMEngine, NLLBEngine, HybridEngine  # noqa: F401
 from core.whisper_stt import MockSTT, WhisperSTT, detect_cpu_backend, get_available_backends  # noqa: F401
+
+logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -109,18 +113,18 @@ class Interpreter:
                 load_ok = True
                 message = ""
                 try:
-                    print("[info] モックモード: Whisper STTをロード中...")
+                    logger.info("モックモード: Whisper STTをロード中")
                     self.stt = WhisperSTT(whisper_model=self._whisper_model)
                     with self._state_lock:
                         self._stt_ready = True
-                    print("[info] Whisper STTのロード完了")
+                    logger.info("Whisper STTのロード完了")
                 except Exception as e:
                     load_ok = False
                     with self._state_lock:
                         self._stt_ready = False
                         self._model_load_error = f"翻訳は利用できますが、音声認識は使えません: {e}"
                     message = self._model_load_error
-                    print(f"[warn] STTロード失敗（モックSTT継続）: {e}")
+                    logger.warning("STTロード失敗（モックSTT継続）: %s", e)
                 with self._state_lock:
                     self._models_ready = self._translation_ready and self._stt_ready
                     self._model_load_state = "ready" if load_ok else "degraded"
@@ -155,28 +159,28 @@ class Interpreter:
                         self._translation_ready = False
                         self._model_load_error = no_model_msg
                     load_errors.append(no_model_msg)
-                    print(f"[warn] {no_model_msg}")
+                    logger.warning("%s", no_model_msg)
             except Exception as e:
                 with self._state_lock:
                     self._translation_ready = False
                 load_errors.append(f"翻訳エンジンのロード失敗: {e}")
-                print(f"[error] {load_errors[-1]}")
+                logger.error("%s", load_errors[-1])
 
             try:
                 if on_progress:
                     on_progress("stt", 0.0)
-                print("[info] Whisper STTをロード中...")
+                logger.info("Whisper STTをロード中")
                 self.stt = WhisperSTT(whisper_model=self._whisper_model)
                 with self._state_lock:
                     self._stt_ready = True
                 if on_progress:
                     on_progress("stt", 1.0)
-                print("[info] Whisper STTのロード完了")
+                logger.info("Whisper STTのロード完了")
             except Exception as e:
                 with self._state_lock:
                     self._stt_ready = False
                 load_errors.append(f"音声認識モデルのロード失敗: {e}")
-                print(f"[error] {load_errors[-1]}")
+                logger.error("%s", load_errors[-1])
 
             with self._state_lock:
                 self._models_ready = self._translation_ready and self._stt_ready
@@ -208,10 +212,10 @@ class Interpreter:
     def _load_llm(self, on_progress):
         """LLMエンジン（llama-server API方式 or llama-cpp-python フォールバック）のロード"""
         tier_name, total_gb = LLMEngine.detect_tier()
-        print(f"[info] メモリ: {total_gb}GB → ティア: {tier_name}")
+        logger.info("メモリ: %dGB → ティア: %s", total_gb, tier_name)
 
         if tier_name == "lite":
-            print("[info] 8GB以下: LLMスキップ → NLLBにフォールバック")
+            logger.info("8GB以下: LLMスキップ → NLLBにフォールバック")
             self._load_nllb(on_progress)
             return
 
@@ -233,21 +237,21 @@ class Interpreter:
 
         # 最大120秒待機（大型モデルのロードに時間がかかる）
         if not _llm_done.wait(timeout=120):
-            print("[warn] LLMロードタイムアウト")
+            logger.warning("LLMロードタイムアウト")
 
         if llm.is_ready:
             if on_progress:
                 on_progress("llm", 1.0)
             self.engine = llm
             mode = "API (llama-server)" if llm._use_api else "in-process (llama-cpp-python)"
-            print(f"[info] LLMエンジンのロード完了 ({mode})")
+            logger.info("LLMエンジンのロード完了 (%s)", mode)
         else:
-            print(f"[warn] LLMロード失敗: {llm._load_error} → NLLBにフォールバック")
+            logger.warning("LLMロード失敗: %s → NLLBにフォールバック", llm._load_error)
             self._load_nllb(on_progress)
 
     def _load_nllb(self, on_progress):
         """NLLBエンジン（CTranslate2）のロード"""
-        print(f"[info] NLLBモデルをロード中: {self._nllb_model_dir}")
+        logger.info("NLLBモデルをロード中: %s", self._nllb_model_dir)
         if on_progress:
             on_progress("nllb", 0.0)
 
@@ -257,11 +261,11 @@ class Interpreter:
         if on_progress:
             on_progress("nllb", 1.0)
         self.engine = nllb
-        print("[info] NLLBモデルのロード完了")
+        logger.info("NLLBモデルのロード完了")
 
     def _load_hybrid(self, on_progress):
         """ハイブリッドエンジン（OPUS-MT + NLLB）のロード"""
-        print(f"[info] ハイブリッドエンジンをロード中...")
+        logger.info("ハイブリッドエンジンをロード中")
         if on_progress:
             on_progress("hybrid", 0.0)
 
@@ -281,8 +285,8 @@ class Interpreter:
         if on_progress:
             on_progress("hybrid", 1.0)
         self.engine = hybrid
-        print(f"[info] ハイブリッドエンジンのロード完了 "
-              f"(OPUS-MT: {len(hybrid.get_loaded_pairs())}ペア)")
+        logger.info("ハイブリッドエンジンのロード完了 (OPUS-MT: %dペア)",
+                    len(hybrid.get_loaded_pairs()))
 
     def cleanup(self):
         """終了処理: llama-server を停止してメモリ解放"""
@@ -323,9 +327,9 @@ class Interpreter:
             with open(path, "r", encoding="utf-8") as f:
                 data = _json.load(f)
                 self.glossary = data.get("entries", [])
-                print(f"[info] グロッサリー読込: {len(self.glossary)}件 ({path})")
+                logger.info("グロッサリー読込: %d件 (%s)", len(self.glossary), path)
         except Exception as e:
-            print(f"[warn] グロッサリー読込失敗: {e}")
+            logger.warning("グロッサリー読込失敗: %s", e)
             self.glossary = []
 
     def save_glossary(self, entries: list[dict]):
@@ -337,7 +341,7 @@ class Interpreter:
         data = {"entries": entries}
         with open(user_path, "w", encoding="utf-8") as f:
             _json.dump(data, f, ensure_ascii=False, indent=2)
-        print(f"[info] グロッサリー保存: {len(entries)}件")
+        logger.info("グロッサリー保存: %d件", len(entries))
 
     def reload_glossary(self):
         """グロッサリーを再読み込み"""
@@ -352,7 +356,9 @@ class Interpreter:
 
         Returns: (処理済テキスト, 置換した foreign 名のリスト)
         """
-        print(f"[glossary] _pre called: text={text}, glossary件数={len(self.glossary)}")
+        # 秘匿: 発話本文・固有名詞はログに書かない（長さ・件数のみ）
+        logger.debug("glossary前処理開始 text_len=%d glossary件数=%d",
+                     len(text), len(self.glossary))
         name_entries = [e for e in self.glossary if e.get("type") == "name"]
         sorted_entries = sorted(name_entries, key=lambda e: len(e.get("ja", "")), reverse=True)
 
@@ -366,9 +372,9 @@ class Interpreter:
             if ja in result:
                 result = result.replace(ja, foreign)
                 replaced.append(foreign)
-                print(f"[glossary] 直接置換: {ja} → {foreign}")
         if replaced:
-            print(f"[glossary] エンジンへの入力: {result}")
+            logger.debug("glossary直接置換: %d件適用 out_len=%d",
+                         len(replaced), len(result))
         return result, replaced
 
     def _glossary_post_ja_to_foreign(self, translated: str, replaced_names: list) -> str:
@@ -378,10 +384,11 @@ class Interpreter:
         result = translated
         for name in replaced_names:
             if name.lower() in result.lower():
-                print(f"[glossary] 後処理: '{name}' が訳文に保持されている OK")
+                # 秘匿: 固有名詞そのものはログに書かない
+                logger.debug("glossary後処理: 固有名詞は訳文に保持 OK")
                 continue
             # 名前が訳文に無い → エンジンが誤訳した → 誤訳名を探して強制置換
-            print(f"[glossary] 後処理: '{name}' が訳文に無い → 誤訳名を探して置換")
+            logger.debug("glossary後処理: 固有名詞が訳文に無い → 強制置換を試行")
             result = self._force_replace_name(result, name)
         return result
 
@@ -406,13 +413,15 @@ class Interpreter:
                 if words[0].rstrip('.') in ("Mr", "Mrs", "Ms", "Dr"):
                     prefix = words[0] + " "
                 translated = translated[:m.start()] + prefix + correct_name + translated[m.end():]
-                print(f"[glossary] 強制置換: '{candidate}' → '{prefix}{correct_name}'")
+                # 秘匿: 置換前後の固有名詞はログに書かない
+                logger.debug("glossary強制置換: 実行 (candidate_len=%d)", len(candidate))
                 break
         return translated
 
     def _apply_glossary_foreign_to_ja(self, text: str) -> str:
         """翻訳前: 外国語テキスト中のグロッサリー語句を直接日本語に置換"""
         result = text
+        replaced_count = 0
         sorted_entries = sorted(self.glossary, key=lambda e: len(e.get("foreign", "")), reverse=True)
         for entry in sorted_entries:
             ja = entry.get("ja", "")
@@ -425,9 +434,12 @@ class Interpreter:
             pos = lower_result.find(lower_foreign)
             while pos >= 0:
                 result = result[:pos] + ja + result[pos + len(foreign):]
-                print(f"[glossary] 置換: {foreign} → {ja}")
+                replaced_count += 1
                 lower_result = result.lower()
                 pos = lower_result.find(lower_foreign)
+        if replaced_count:
+            # 秘匿: 語句そのものはログに書かない
+            logger.debug("glossary置換 (foreign→ja): %d件適用", replaced_count)
         return result
 
     def translate_attorney(self, japanese_text: str):
@@ -447,7 +459,8 @@ class Interpreter:
 
         # グロッサリー前処理: 固有名詞をマーカーに置換
         processed_text, glossary_map = self._glossary_pre_ja_to_foreign(japanese_text)
-        print(f"[glossary] 翻訳エンジンへの入力: {processed_text}")
+        # 秘匿: 入力本文はログに書かない（言語・長さのみ）
+        logger.debug("translate ja->%s len=%d", tgt, len(processed_text))
 
         def run():
             # 中間言語情報を取得してからストリーミング
@@ -455,7 +468,8 @@ class Interpreter:
                 result = self.engine.translate_detail(
                     processed_text, "ja", tgt
                 )
-                print(f"[glossary] エンジン出力: {result.final_text}")
+                # 秘匿: 訳文本文はログに書かない
+                logger.debug("エンジン出力 len=%d", len(result.final_text))
                 # グロッサリー後処理: マーカーを正しい固有名詞に置換
                 final = self._glossary_post_ja_to_foreign(
                     result.final_text, glossary_map
@@ -475,7 +489,8 @@ class Interpreter:
                 self.engine.translate_stream(
                     processed_text, "ja", tgt, on_token
                 )
-                print(f"[glossary] ストリームエンジン出力: {utt.translated}")
+                # 秘匿: 訳文本文はログに書かない
+                logger.debug("ストリームエンジン出力 len=%d", len(utt.translated))
                 # グロッサリー後処理
                 final = self._glossary_post_ja_to_foreign(
                     utt.translated, glossary_map

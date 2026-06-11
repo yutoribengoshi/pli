@@ -17,8 +17,12 @@ from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import QMenuBar, QMenu, QMessageBox, QProgressDialog
 
+from core.logging_setup import get_logger
+
 if TYPE_CHECKING:
     from core.interpreter import Interpreter
+
+logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -619,7 +623,7 @@ class EngineMenuBuilder(QObject):
         出力が見えないため、print だけでは握り潰しになる）。
         """
         if not success and message:
-            print(f"[error] {message}")
+            logger.error("%s", message)
 
         dlg = self._dl_dialog
         self._dl_dialog = None

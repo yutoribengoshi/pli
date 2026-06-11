@@ -31,6 +31,7 @@ from core.interpreter import (
     Interpreter, Utterance, Speaker,
     EngineType, SUPPORTED_LANGUAGES, get_language_name,
 )
+from core.logging_setup import get_logger, get_log_dir, read_recent_errors
 from core.recorder import Recorder, RecordMode
 from core.version import __version__
 from core.session_controller import SessionController
@@ -43,6 +44,8 @@ from ui.dialogs import (                                 # noqa: F401
 from ui.engine_menu import EngineMenuBuilder
 import ui.font_config as _font_cfg
 from ui.font_config import fs as _fs  # noqa: F401
+
+logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # スタイル定数 — 平成初期レトロ（暖灰・紺・深緑）
@@ -614,6 +617,13 @@ class AttorneyWindow(QMainWindow):
         shortcut_help = QAction("ショートカット一覧  ⌘/", self)
         shortcut_help.triggered.connect(self._show_shortcut_help)
         help_menu.addAction(shortcut_help)
+        help_menu.addSeparator()
+        open_log_action = QAction("ログフォルダを開く", self)
+        open_log_action.triggered.connect(self._on_open_log_folder)
+        help_menu.addAction(open_log_action)
+        support_info_action = QAction("サポート情報をコピー", self)
+        support_info_action.triggered.connect(self._on_copy_support_info)
+        help_menu.addAction(support_info_action)
         help_menu.addSeparator()
         about_action = QAction("PLI について...", self)
         about_action.triggered.connect(self._show_about)
@@ -1452,6 +1462,112 @@ class AttorneyWindow(QMainWindow):
     # ===================================================================
     #  Help dialogs
     # ===================================================================
+
+    def _on_open_log_folder(self):
+        """ヘルプ > ログフォルダを開く"""
+        import subprocess
+        import sys as _sys
+        log_dir = get_log_dir()
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            if _sys.platform == "darwin":
+                subprocess.Popen(["open", str(log_dir)])
+            elif os.name == "nt":
+                os.startfile(str(log_dir))  # type: ignore[attr-defined]
+            else:
+                subprocess.Popen(["xdg-open", str(log_dir)])
+            self.status_bar.showMessage(f"ログフォルダを開きました: {log_dir}", 3000)
+        except Exception as e:
+            logger.error("ログフォルダを開けません: %s", e)
+            QMessageBox.warning(
+                self, "PLI",
+                f"ログフォルダを開けませんでした。\n場所: {log_dir}\n\n詳細: {e}")
+
+    def _build_support_info(self) -> str:
+        """サポート情報テキストを組み立てる（発話内容は一切含めない）"""
+        import platform as _platform
+        lines = [f"PLI バージョン: {__version__}"]
+
+        # OS情報
+        if _platform.system() == "Darwin":
+            lines.append(f"macOS: {_platform.mac_ver()[0]} ({_platform.machine()})")
+        else:
+            lines.append(f"OS: {_platform.platform()}")
+
+        # メモリ・ティア
+        try:
+            from core.engines.llm import LLMEngine
+            tier_name, total_gb = LLMEngine.detect_tier()
+            lines.append(f"RAM: {total_gb}GB (ティア: {tier_name})")
+        except Exception as e:
+            lines.append(f"RAM: 取得失敗 ({e})")
+
+        # 現在のエンジン状態
+        itp = self.interpreter
+        lines.append(f"現在のエンジン: {type(itp.engine).__name__} "
+                     f"(state={itp.model_load_state}, "
+                     f"翻訳ready={itp.translation_ready}, "
+                     f"STT ready={itp.stt_ready})")
+        if itp.model_load_error:
+            lines.append(f"ロードエラー: {itp.model_load_error}")
+
+        # モデルダウンロード状況
+        lines.append("--- モデルダウンロード状況 ---")
+        try:
+            from core.whisper_stt import whisper_model_downloaded
+            lines.append(f"Whisper STT: "
+                         f"{'ダウンロード済み' if whisper_model_downloaded() else '未ダウンロード'}")
+        except Exception as e:
+            lines.append(f"Whisper STT: 確認失敗 ({e})")
+        try:
+            from core.nllb_downloader import list_downloaded as _nllb_dl
+            nllb = _nllb_dl()
+            lines.append(f"NLLB: {', '.join(nllb) if nllb else 'なし'}")
+        except Exception as e:
+            lines.append(f"NLLB: 確認失敗 ({e})")
+        try:
+            from core.opus_downloader import (
+                list_downloaded as _opus_dl,
+                list_downloaded_multilingual as _opus_mul,
+            )
+            pairs = _opus_dl()
+            muls = _opus_mul()
+            lines.append(f"OPUS-MT: {len(pairs)}ペア "
+                         f"({', '.join(pairs) if pairs else 'なし'})")
+            if muls:
+                lines.append(f"OPUS-MT マルチリンガル: {', '.join(muls)}")
+        except Exception as e:
+            lines.append(f"OPUS-MT: 確認失敗 ({e})")
+        try:
+            import glob as _glob
+            ggufs = sorted(_glob.glob(os.path.expanduser("~/pli-models/*.gguf")))
+            names = [os.path.basename(g) for g in ggufs]
+            lines.append(f"LLM (GGUF): {', '.join(names) if names else 'なし'}")
+        except Exception as e:
+            lines.append(f"LLM (GGUF): 確認失敗 ({e})")
+
+        # 直近のエラーログ（発話本文はログ自体に含まれない設計）
+        lines.append("--- 直近のERRORログ (最大5件) ---")
+        errors = read_recent_errors(5)
+        if errors:
+            lines.extend(errors)
+        else:
+            lines.append("(なし)")
+        return "\n".join(lines)
+
+    def _on_copy_support_info(self):
+        """ヘルプ > サポート情報をコピー"""
+        from PySide6.QtWidgets import QApplication as _QApp
+        try:
+            info = self._build_support_info()
+        except Exception as e:
+            logger.error("サポート情報の生成に失敗: %s", e)
+            QMessageBox.warning(self, "PLI",
+                                f"サポート情報の生成に失敗しました。\n詳細: {e}")
+            return
+        _QApp.clipboard().setText(info)
+        self.status_bar.showMessage(
+            "📋 サポート情報をコピーしました（接見内容は含まれません）", 5000)
 
     def _show_about(self):
         QMessageBox.about(self, "PLI について",
