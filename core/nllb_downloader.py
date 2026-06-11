@@ -6,7 +6,12 @@ HuggingFace Hub からの自動ダウンロードに対応。
 """
 
 import os
+import shutil
 from typing import Callable, Optional
+
+
+class DiskSpaceError(RuntimeError):
+    """ディスク空き容量不足エラー（ダウンロード前チェックで送出）"""
 
 # ---------------------------------------------------------------------------
 # モデルカタログ
@@ -35,6 +40,44 @@ NLLB_BASE_DIR = os.path.expanduser("~/pli-models/nllb")
 def get_model_dir(model_key: str) -> str:
     """モデルのローカルディレクトリパスを返す"""
     return os.path.join(NLLB_BASE_DIR, model_key)
+
+
+def _ensure_disk_space(dest_dir: str, required_gb: float) -> None:
+    """ダウンロード先の空き容量を確認し、不足なら DiskSpaceError を送出する。
+
+    *dest_dir* は存在している必要がある（os.makedirs 後に呼ぶこと）。
+    """
+    free_gb = shutil.disk_usage(dest_dir).free / (1024 ** 3)
+    if free_gb < required_gb:
+        raise DiskSpaceError(
+            f"ディスク空き容量が不足しています"
+            f"（必要: {required_gb:.1f} GB / 空き: {free_gb:.1f} GB）"
+        )
+
+
+def _verify_downloaded_files(dest: str) -> None:
+    """ダウンロード結果の整合性チェック。必須ファイル欠落なら例外を送出する。
+
+    - CTranslate2 モデル本体: model.bin
+    - トークナイザー: tokenizer/ 配下の設定 + 語彙ファイル
+    """
+    missing = []
+    if not os.path.exists(os.path.join(dest, "model.bin")):
+        missing.append("model.bin")
+    tokenizer_dir = os.path.join(dest, "tokenizer")
+    if not os.path.exists(os.path.join(tokenizer_dir, "tokenizer_config.json")):
+        missing.append("tokenizer/tokenizer_config.json")
+    if not (
+        os.path.exists(os.path.join(tokenizer_dir, "sentencepiece.bpe.model"))
+        or os.path.exists(os.path.join(tokenizer_dir, "tokenizer.json"))
+    ):
+        missing.append("tokenizer/（sentencepiece.bpe.model または tokenizer.json）")
+    if missing:
+        raise RuntimeError(
+            "ダウンロードしたモデルデータが不完全です"
+            f"（不足ファイル: {', '.join(missing)}）。"
+            "もう一度ダウンロードをお試しください。"
+        )
 
 
 def is_downloaded(model_key: str) -> bool:
@@ -72,12 +115,15 @@ def download_model(
     dest = get_model_dir(model_key)
     os.makedirs(dest, exist_ok=True)
 
+    # ダウンロード前にディスク空き容量を確認
+    _ensure_disk_space(dest, info["size_gb"])
+
     try:
         from huggingface_hub import snapshot_download
     except ImportError:
         raise RuntimeError(
-            "huggingface_hub が未インストールです。\n"
-            "pip install huggingface_hub でインストールしてください。"
+            "この機能は現在利用できません"
+            "（ダウンロードコンポーネントが見つかりません）。"
         )
 
     if on_progress:
@@ -104,8 +150,14 @@ def download_model(
         tokenizer = AutoTokenizer.from_pretrained(info["tokenizer_repo"])
         tokenizer.save_pretrained(tokenizer_dir)
     except Exception as e:
-        print(f"[nllb] トークナイザーのダウンロードに失敗: {e}")
-        # トークナイザーが失敗してもモデルは使える場合がある
+        # トークナイザーが無いと翻訳時に必ず失敗する。
+        # 黙殺せず、ここで失敗として呼び出し元（エラー表示経路）に伝える。
+        raise RuntimeError(
+            f"トークナイザーのダウンロードに失敗しました: {e}"
+        ) from e
+
+    # ダウンロード結果の整合性チェック（必須ファイルの存在確認）
+    _verify_downloaded_files(dest)
 
     if on_progress:
         on_progress(1.0)
@@ -129,5 +181,8 @@ def check_dependencies() -> tuple[bool, str]:
             missing.append(pkg)
 
     if missing:
-        return False, f"未インストール: {', '.join(missing)}\npip install {' '.join(missing)}"
+        return False, (
+            "この機能は現在利用できません"
+            f"（必要なコンポーネントが見つかりません: {', '.join(missing)}）"
+        )
     return True, "OK"

@@ -6,7 +6,75 @@ Copyright (c) 2025-2026 中野通り法律事務所 弁護士 関智之 (Tomoyuk
 All rights reserved.
 """
 
+import os
 import platform
+import sys
+from pathlib import Path
+
+# mlx-whisper が使うHuggingFaceリポジトリ（macOS / Apple Silicon用）
+WHISPER_REPO = "mlx-community/whisper-turbo"
+
+
+# ---------------------------------------------------------------------------
+# モデルダウンロード管理（macOS / mlx-whisper 用）
+# ---------------------------------------------------------------------------
+
+def _hf_hub_cache_dir() -> Path:
+    """HuggingFaceハブのキャッシュディレクトリ（環境変数の上書きに対応）"""
+    env = os.environ.get("HF_HUB_CACHE")
+    if env:
+        return Path(env)
+    hf_home = os.environ.get("HF_HOME")
+    if hf_home:
+        return Path(hf_home) / "hub"
+    return Path.home() / ".cache" / "huggingface" / "hub"
+
+
+def whisper_model_downloaded() -> bool:
+    """Whisper STTモデルがHFキャッシュにダウンロード済みか
+
+    macOS (mlx-whisper) のみ実チェックする。Windows/Linux の
+    faster-whisper は独自のキャッシュ管理を持つため、非macOSでは
+    常に True を返す（今後の課題）。
+    """
+    if sys.platform != "darwin":
+        return True
+    snapshots = (
+        _hf_hub_cache_dir()
+        / ("models--" + WHISPER_REPO.replace("/", "--"))
+        / "snapshots"
+    )
+    if not snapshots.is_dir():
+        return False
+    for snap in snapshots.iterdir():
+        if not snap.is_dir():
+            continue
+        for pattern in ("*.safetensors", "weights.npz"):
+            for f in snap.glob(pattern):
+                try:
+                    # snapshot内はblobへのsymlink。blob欠損（壊れたリンク）を除外
+                    if f.exists() and f.stat().st_size > 0:
+                        return True
+                except OSError:
+                    continue
+    return False
+
+
+def download_whisper_model(progress_cb=None) -> str:
+    """Whisper STTモデル（約1.5GB）をHuggingFaceからダウンロードする
+
+    Args:
+        progress_cb: callable(float) — 開始時に 0.0、完了時に 1.0 で呼ばれる
+    Returns:
+        ダウンロードされたスナップショットのローカルパス
+    """
+    from huggingface_hub import snapshot_download
+    if progress_cb:
+        progress_cb(0.0)
+    path = snapshot_download(WHISPER_REPO)
+    if progress_cb:
+        progress_cb(1.0)
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -100,14 +168,13 @@ class WhisperSTT:
     """
 
     def __init__(self, whisper_model: str = "", cpu_backend: str = "auto"):
-        import sys
         self._cpu_backend = cpu_backend
         if sys.platform == "darwin":
             # macOS: mlx-whisper (Apple Silicon GPU加速)
             import mlx_whisper
             self._backend = "mlx"
             self._mlx_whisper = mlx_whisper
-            self._repo = "mlx-community/whisper-turbo"
+            self._repo = WHISPER_REPO
         else:
             # Windows/Linux: faster-whisper
             from faster_whisper import WhisperModel

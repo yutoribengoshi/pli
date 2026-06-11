@@ -330,9 +330,11 @@ class EngineMenuBuilder(QObject):
             self._nllb_menu.addAction(act)
 
         if not deps_ok:
+            # 翻訳コンポーネントは通常アプリに同梱されているため、ここに来るのは
+            # インストール破損等の異常時のみ。開発者向け文言は出さない。
             self._nllb_menu.addSeparator()
             dep_info = QAction(
-                "⚠️ pip install ctranslate2 transformers sentencepiece", self)
+                "⚠️ この機能は現在利用できません（アプリの再インストールをお試しください）", self)
             dep_info.setEnabled(False)
             self._nllb_menu.addAction(dep_info)
 
@@ -483,9 +485,11 @@ class EngineMenuBuilder(QObject):
         self._opus_menu.addAction(stat)
 
         if not deps_ok:
+            # 翻訳コンポーネントは通常アプリに同梱されているため、ここに来るのは
+            # インストール破損等の異常時のみ。開発者向け文言は出さない。
             self._opus_menu.addSeparator()
             dep_info = QAction(
-                "⚠️ pip install ctranslate2 transformers sentencepiece huggingface_hub",
+                "⚠️ この機能は現在利用できません（アプリの再インストールをお試しください）",
                 self)
             dep_info.setEnabled(False)
             self._opus_menu.addAction(dep_info)
@@ -611,6 +615,8 @@ class EngineMenuBuilder(QObject):
 
         ダイアログを確実に閉じ（キャンセルボタン非表示のため、失敗時に
         ここで閉じないとモーダルが残り続ける）、対応するメニューを再構築する。
+        失敗時はユーザーにダイアログで通知する（配布 .app ではコンソール
+        出力が見えないため、print だけでは握り潰しになる）。
         """
         if not success and message:
             print(f"[error] {message}")
@@ -619,6 +625,10 @@ class EngineMenuBuilder(QObject):
         self._dl_dialog = None
         if dlg is not None:
             dlg.close()
+
+        if not success and message:
+            QMessageBox.warning(
+                self._find_parent_widget(), "ダウンロードエラー", message)
 
         rebuild = self._dl_rebuild
         self._dl_rebuild = None

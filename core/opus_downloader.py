@@ -9,7 +9,16 @@ NLLB（200言語汎用）と組み合わせて最高精度を実現。
 """
 
 import os
+import shutil
 from typing import Callable, Optional
+
+
+class DiskSpaceError(RuntimeError):
+    """ディスク空き容量不足エラー（ダウンロード前チェックで送出）"""
+
+
+# 1ペアあたりのダウンロード容量概算（HF重み + CT2変換一時ファイル込み）
+OPUS_PAIR_SIZE_GB = 0.5
 
 # ---------------------------------------------------------------------------
 # 言語ペアカタログ
@@ -285,6 +294,41 @@ def get_model_dir(pair_key: str) -> str:
     return os.path.join(OPUS_BASE_DIR, pair_key)
 
 
+def _ensure_disk_space(dest_dir: str, required_gb: float) -> None:
+    """ダウンロード先の空き容量を確認し、不足なら DiskSpaceError を送出する。
+
+    *dest_dir* は存在している必要がある（os.makedirs 後に呼ぶこと）。
+    """
+    free_gb = shutil.disk_usage(dest_dir).free / (1024 ** 3)
+    if free_gb < required_gb:
+        raise DiskSpaceError(
+            f"ディスク空き容量が不足しています"
+            f"（必要: {required_gb:.1f} GB / 空き: {free_gb:.1f} GB）"
+        )
+
+
+def _verify_downloaded_files(dest: str) -> None:
+    """ダウンロード結果の整合性チェック。必須ファイル欠落なら例外を送出する。
+
+    - CTranslate2 形式: model.bin
+    - HuggingFace 形式（CT2変換失敗時のフォールバック）:
+      config.json + 重みファイル（pytorch_model.bin / model.safetensors）
+    """
+    if os.path.exists(os.path.join(dest, "model.bin")):
+        return  # CTranslate2 形式 OK
+    has_weights = (
+        os.path.exists(os.path.join(dest, "pytorch_model.bin"))
+        or os.path.exists(os.path.join(dest, "model.safetensors"))
+    )
+    if os.path.exists(os.path.join(dest, "config.json")) and has_weights:
+        return  # HuggingFace 形式 OK
+    raise RuntimeError(
+        "ダウンロードしたモデルデータが不完全です"
+        "（モデル本体ファイルが見つかりません）。"
+        "もう一度ダウンロードをお試しください。"
+    )
+
+
 def is_downloaded(pair_key: str) -> bool:
     """CTranslate2変換済みモデルが存在するか"""
     model_dir = get_model_dir(pair_key)
@@ -372,6 +416,9 @@ def download_model(
     dest = get_model_dir(pair_key)
     os.makedirs(dest, exist_ok=True)
 
+    # ダウンロード前にディスク空き容量を確認
+    _ensure_disk_space(dest, OPUS_PAIR_SIZE_GB)
+
     if on_progress:
         on_progress(0.05)
 
@@ -380,8 +427,8 @@ def download_model(
         from huggingface_hub import snapshot_download
     except ImportError:
         raise RuntimeError(
-            "huggingface_hub が未インストールです。\n"
-            "pip install huggingface_hub でインストールしてください。"
+            "この機能は現在利用できません"
+            "（ダウンロードコンポーネントが見つかりません）。"
         )
 
     print(f"[opus] モデルをダウンロード中: {info['repo']}")
@@ -399,6 +446,9 @@ def download_model(
         _convert_to_ct2(dest, on_progress)
     elif on_progress:
         on_progress(0.95)
+
+    # ダウンロード結果の整合性チェック（必須ファイルの存在確認）
+    _verify_downloaded_files(dest)
 
     if on_progress:
         on_progress(1.0)
@@ -459,6 +509,12 @@ def download_pairs_for_lang(
     # priority順にソート
     pairs.sort(key=lambda k: OPUS_MODELS[k].get("priority", 99))
 
+    # 一括ダウンロードの合計サイズ分の空き容量を先に確認
+    remaining = [p for p in pairs if not is_downloaded(p)]
+    if remaining:
+        os.makedirs(OPUS_BASE_DIR, exist_ok=True)
+        _ensure_disk_space(OPUS_BASE_DIR, OPUS_PAIR_SIZE_GB * len(remaining))
+
     done = []
     for i, pair_key in enumerate(pairs):
         if is_downloaded(pair_key):
@@ -471,6 +527,9 @@ def download_pairs_for_lang(
                     on_progress(pair_key, total_ratio)
             download_model(pair_key, on_progress=_prog)
             done.append(pair_key)
+        except DiskSpaceError:
+            # 容量不足は以降のペアも全て失敗するため、握り潰さず中断して通知
+            raise
         except Exception as e:
             print(f"[opus] {pair_key} ダウンロード失敗: {e}")
     return done
@@ -490,5 +549,8 @@ def check_dependencies() -> tuple[bool, str]:
             missing.append(pkg)
 
     if missing:
-        return False, f"未インストール: {', '.join(missing)}\npip install {' '.join(missing)}"
+        return False, (
+            "この機能は現在利用できません"
+            f"（必要なコンポーネントが見つかりません: {', '.join(missing)}）"
+        )
     return True, "OK"

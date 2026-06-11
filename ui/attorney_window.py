@@ -173,6 +173,7 @@ class AttorneyWindow(QMainWindow):
         self._dummy_pdf_path = ""
         self._embed_visible = False
         self._view_style = view_style
+        self._mic_error_dialog_shown = False  # マイク案内ダイアログはセッション中1回だけ
 
         self._defendant_panel = DefendantPanel()
 
@@ -1021,6 +1022,57 @@ class AttorneyWindow(QMainWindow):
                          "idle": "🎤 マイク待機中… / 日本語を入力してEnter"}
         if state_name in placeholders:
             self.input_field.setPlaceholderText(placeholders[state_name])
+
+    @Slot(str)
+    def on_stt_error(self, message: str):
+        """STTリスナーのエラー受信（main.py のブリッジ経由）
+
+        stt_listener が分類した構造化コード（mic_denied / mic_missing）は
+        日本語の案内ダイアログで対処方法を示す。それ以外は従来どおり
+        ステータスバーに表示する。
+        """
+        if message in ("mic_denied", "mic_missing"):
+            label = ("マイクが使用できません（権限がありません）"
+                     if message == "mic_denied" else "マイクが見つかりません")
+            self.status_bar.showMessage(label, 8000)
+            if self._mic_error_dialog_shown:
+                return
+            self._mic_error_dialog_shown = True
+            self._show_mic_error_dialog(message)
+        else:
+            self.status_bar.showMessage(f"STTエラー: {message}", 5000)
+
+    def _show_mic_error_dialog(self, code: str):
+        """マイク権限拒否/デバイス無しの案内ダイアログ（セッション中1回だけ）"""
+        import sys
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Warning)
+        box.setWindowTitle("マイクが使用できません")
+        open_settings_btn = None
+        if code == "mic_denied":
+            box.setText(
+                "PLIにマイクの使用が許可されていません。\n"
+                "[システム設定を開く] を押して、プライバシーとセキュリティ > マイク で "
+                "PLI を許可してください。許可後、アプリを再起動してください。"
+            )
+            if sys.platform == "darwin":
+                open_settings_btn = box.addButton("システム設定を開く", QMessageBox.ActionRole)
+        else:  # mic_missing
+            box.setText(
+                "マイクが見つかりません。\n"
+                "マイクが接続されているか確認してから、もう一度マイクをONにしてください。"
+            )
+        box.addButton("閉じる", QMessageBox.RejectRole)
+        box.exec()
+        if open_settings_btn is not None and box.clickedButton() is open_settings_btn:
+            import subprocess
+            try:
+                subprocess.Popen([
+                    "open",
+                    "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
+                ])
+            except OSError as e:
+                self.status_bar.showMessage(f"システム設定を開けませんでした: {e}", 5000)
 
     def _update_stt_mode_label(self):
         if not self.controller.stt_active:

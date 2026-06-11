@@ -31,6 +31,39 @@ class ListenerState(Enum):
     PROCESSING = "processing"  # Whisper処理中
 
 
+def classify_mic_error(exc: Exception) -> str:
+    """マイク入力ストリーム起動失敗の原因を分類する。
+
+    Returns:
+        "mic_denied"  — OSのマイク権限拒否（macOS プライバシー設定等）の可能性が高い
+        "mic_missing" — 入力デバイスが見つからない
+        ""            — 分類不能（呼び出し側で生メッセージを使う）
+    """
+    msg = str(exc).lower()
+    missing_signs = (
+        "no default input device",
+        "error querying device",
+        "invalid device",
+        "no input device",
+        "device unavailable",
+        "invalid number of channels",
+    )
+    denied_signs = (
+        "permission",
+        "not permitted",
+        "access denied",
+        "-9986",                      # paInternalError: macOSでは大抵マイク権限拒否
+        "internal portaudio error",
+        "-9999",                      # paUnanticipatedHostError: CoreAudio権限系
+        "unanticipated host error",
+    )
+    if any(s in msg for s in missing_signs):
+        return "mic_missing"
+    if any(s in msg for s in denied_signs):
+        return "mic_denied"
+    return ""
+
+
 class STTListener:
     """マイク → VAD → Whisper のリアルタイムパイプライン"""
 
@@ -48,6 +81,10 @@ class STTListener:
         self.on_result: Optional[Callable[[str, str], None]] = None  # (text, lang)
         self.on_state_change: Optional[Callable[[ListenerState], None]] = None
         self.on_error: Optional[Callable[[str], None]] = None
+
+        # 直近のマイク起動エラー
+        # "mic_denied" / "mic_missing" / 生メッセージ / None(正常)
+        self.last_error: Optional[str] = None
 
         # VAD設定
         self._sample_rate = 16000
@@ -177,7 +214,7 @@ class STTListener:
             import sounddevice as sd
         except ImportError:
             if self.on_error:
-                self.on_error("sounddeviceが必要です: pip install sounddevice")
+                self.on_error("音声入力モジュールを読み込めません。アプリの再インストールをお試しください。")
             return
 
         try:
@@ -189,9 +226,14 @@ class STTListener:
             )
             stream.start()
         except Exception as e:
+            # 権限拒否/デバイス無しを分類し、構造化エラーとしてUIに渡す
+            code = classify_mic_error(e)
+            self.last_error = code if code else f"マイクを開けません: {e}"
+            print(f"[STT] マイク起動失敗 ({code or 'unknown'}): {e}")
             if self.on_error:
-                self.on_error(f"マイクを開けません: {e}")
+                self.on_error(self.last_error)
             return
+        self.last_error = None
 
         try:
             # 自動キャリブレーション（最初の1秒）

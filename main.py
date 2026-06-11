@@ -23,11 +23,12 @@ import os
 import argparse
 from pathlib import Path
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox, QProgressDialog
 from PySide6.QtCore import Qt, QTimer, QObject, Signal
 
 from core.version import __version__  # noqa: F401  バージョン単一ソース
 from core.interpreter import Interpreter, EngineType
+from core.whisper_stt import whisper_model_downloaded, download_whisper_model
 from core.recorder import Recorder, RecordMode
 from core.hide_mode import HideMode, HideSettings
 from core.stt_listener import STTListener, ListenerState
@@ -40,6 +41,7 @@ class _ThreadBridge(QObject):
     stt_result = Signal(str, str)       # (text, lang)
     stt_state = Signal(str)             # state.value
     stt_error = Signal(str)             # message
+    whisper_dl_done = Signal(bool, str)  # (success, error_message)
 
 
 class PLIApp:
@@ -105,8 +107,9 @@ class PLIApp:
         self._bridge = _ThreadBridge()
         self._bridge.stt_result.connect(self.attorney.on_stt_result)
         self._bridge.stt_state.connect(self.attorney.on_stt_state_change)
-        self._bridge.stt_error.connect(
-            lambda msg: self.attorney.status_bar.showMessage(f"STTエラー: {msg}", 5000))
+        self._bridge.stt_error.connect(self.attorney.on_stt_error)
+        self._bridge.whisper_dl_done.connect(self._on_whisper_download_finished)
+        self._whisper_dl_dialog = None  # ダウンロード中のQProgressDialog
 
         # STTリスナーのコールバック → Signal.emit（スレッド安全）
         self.stt_listener.on_result = lambda text, lang: self._bridge.stt_result.emit(text, lang)
@@ -425,7 +428,73 @@ class PLIApp:
         return self.app.exec()
 
     def _start_model_loading(self):
-        """GUI表示後にモデルロードを開始"""
+        """GUI表示後にモデルロードを開始（必要ならWhisperモデルの事前DLを挟む）"""
+        # 実モード時: Whisper STTモデル（約1.5GB）が未DLなら、初回transcribe()での
+        # 無断ダウンロード（オフライン接見先では英語例外で死ぬ）を防ぐため先に確認する
+        if not self.interpreter.mock and not whisper_model_downloaded():
+            self._prompt_whisper_download()
+            return
+        self._load_models()
+
+    def _prompt_whisper_download(self):
+        """Whisperモデル未DL時の確認ダイアログ → バックグラウンドDL"""
+        ret = QMessageBox.question(
+            self.attorney,
+            "音声認識モデルのダウンロード",
+            "音声認識モデル（約1.5GB）が未ダウンロードです。\n"
+            "今すぐダウンロードしますか？\n\n"
+            "（Wi-Fi環境推奨。接見先などオフライン環境では"
+            "音声認識が使えません）",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if ret != QMessageBox.Yes:
+            # スキップ: STT初回利用時に通常のエラー表示に任せる
+            self._load_models()
+            return
+
+        # 進捗ダイアログ（不定長・キャンセル不可）
+        dialog = QProgressDialog(
+            "音声認識モデルをダウンロード中…（約1.5GB）\n"
+            "回線速度により数分かかります。", "", 0, 0, self.attorney)
+        dialog.setWindowTitle("PLI - モデルダウンロード")
+        dialog.setCancelButton(None)
+        dialog.setWindowModality(Qt.WindowModal)
+        dialog.setMinimumDuration(0)
+        dialog.show()
+        self._whisper_dl_dialog = dialog
+
+        def _worker():
+            try:
+                download_whisper_model()
+                self._bridge.whisper_dl_done.emit(True, "")
+            except Exception as e:
+                self._bridge.whisper_dl_done.emit(False, str(e))
+
+        import threading
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_whisper_download_finished(self, ok: bool, message: str):
+        """WhisperモデルDL完了（メインスレッド・Signal経由）"""
+        if self._whisper_dl_dialog is not None:
+            self._whisper_dl_dialog.close()
+            self._whisper_dl_dialog = None
+        if ok:
+            print("[info] Whisperモデルのダウンロード完了")
+        else:
+            print(f"[warn] Whisperモデルのダウンロード失敗: {message}")
+            QMessageBox.warning(
+                self.attorney,
+                "ダウンロード失敗",
+                "音声認識モデルのダウンロードに失敗しました。\n"
+                "ネットワーク接続を確認して再起動してください。\n"
+                "（翻訳機能はこのまま利用できます）\n\n"
+                f"詳細: {message}",
+            )
+        self._load_models()
+
+    def _load_models(self):
+        """モデルのバックグラウンドロード本体"""
         # スレッド間通信用の共有状態
         self._loading_done = False
         self._loading_progress = ("llm", 0.0)
