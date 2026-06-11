@@ -95,11 +95,15 @@ class LLMEngine:
     }
 
     def __init__(self, model_path: str = "", n_ctx: int = 2048,
-                 api_base: str = "http://127.0.0.1:8000"):
+                 api_base: str = ""):
         import json as _json
         self._json = _json
         self._model_path = model_path
         self._n_ctx = n_ctx
+        if not api_base:
+            # ポートは環境変数 PLI_LLM_PORT で変更可能（デフォルト 8000）
+            port = os.environ.get("PLI_LLM_PORT", "8000")
+            api_base = f"http://127.0.0.1:{port}"
         self._api_base = api_base.rstrip("/")
         self._server_process: Optional[subprocess.Popen] = None
         self._ready = False
@@ -183,21 +187,32 @@ class LLMEngine:
 
     @staticmethod
     def find_llama_server() -> Optional[str]:
-        """llama-server バイナリを探す (macOS/Windows両対応)"""
+        """llama-server バイナリを探す (macOS/Windows両対応)
+
+        環境変数 PLI_MODELS_DIR が設定されていればそのディレクトリを最優先。
+        """
         import shutil, platform
-        candidates = [shutil.which("llama-server")]
+        env_dir = os.environ.get("PLI_MODELS_DIR")
+        candidates = []
         if platform.system() == "Darwin":
+            if env_dir:
+                candidates.append(
+                    os.path.join(os.path.expanduser(env_dir), "llama-server"))
             candidates += [
+                shutil.which("llama-server"),
                 "/opt/homebrew/bin/llama-server",
                 "/usr/local/bin/llama-server",
-                os.path.expanduser("~/dev/pli-models/llama-server"),
+                os.path.expanduser("~/pli-models/llama-server"),
             ]
         else:
             # Windows: llama-server.exe
+            if env_dir:
+                candidates.append(
+                    os.path.join(os.path.expanduser(env_dir), "llama-server.exe"))
             candidates += [
+                shutil.which("llama-server"),
                 shutil.which("llama-server.exe"),
                 os.path.expanduser("~/pli-models/llama-server.exe"),
-                os.path.expanduser("~/dev/pli-models/llama-server.exe"),
                 r"C:\llama.cpp\build\bin\Release\llama-server.exe",
             ]
         for c in candidates:
@@ -206,12 +221,15 @@ class LLMEngine:
         return None
 
     def _find_model_path(self) -> Optional[str]:
-        """ティアに応じたモデルファイルを探す"""
+        """ティアに応じたモデルファイルを探す
+
+        探索ディレクトリは環境変数 PLI_MODELS_DIR が設定されていればそれを優先、
+        未設定なら ~/pli-models。
+        """
         if self._model_path and os.path.isfile(self._model_path):
             return self._model_path
-        models_dir = os.path.expanduser("~/dev/pli-models")
-        if not os.path.isdir(models_dir):
-            models_dir = os.path.expanduser("~/pli-models")
+        models_dir = os.path.expanduser(
+            os.environ.get("PLI_MODELS_DIR") or "~/pli-models")
         # ティア順に大きいモデルを優先探索
         for tier_name in ["max", "pro", "standard"]:
             tier = self.TIERS[tier_name]

@@ -32,6 +32,7 @@ from core.interpreter import (
     EngineType, SUPPORTED_LANGUAGES, get_language_name,
 )
 from core.recorder import Recorder, RecordMode
+from core.version import __version__
 from core.session_controller import SessionController
 from ui.defendant_window import DefendantPanel
 from ui.conversation_bubble import ConversationBubble   # noqa: F401
@@ -208,6 +209,7 @@ class AttorneyWindow(QMainWindow):
             on_stream_to_defendant=lambda tok: self.stream_to_defendant.emit(tok),
             on_finish_defendant_stream=lambda: self.finish_defendant_stream.emit(),
             on_clear_defendant=lambda: self.clear_defendant.emit(),
+            on_rec_mode_change=lambda mode: self._sync_rec_mode_ui(mode),
             on_translation_not_available=lambda msg: (
                 self.status_bar.showMessage(msg, 6000) if hasattr(self, 'status_bar') else None
             ),
@@ -1056,6 +1058,16 @@ class AttorneyWindow(QMainWindow):
         if mode == RecordMode.OFF:
             self.rec_size_label.setText("")
 
+    def _sync_rec_mode_ui(self, mode: RecordMode):
+        """Controller側の実モードにメニュー表示を同期（録音開始失敗時のOFF戻し等）"""
+        order = [RecordMode.OFF, RecordMode.VOLATILE, RecordMode.SAVE]
+        if hasattr(self, '_rec_action_group') and mode in order:
+            actions = self._rec_action_group.actions()
+            if len(actions) == len(order):
+                actions[order.index(mode)].setChecked(True)
+        if mode == RecordMode.OFF and hasattr(self, 'rec_size_label'):
+            self.rec_size_label.setText("")
+
     def _update_rec_size(self):
         self.controller.update_rec_size()
         if self.recorder.mode != RecordMode.OFF:
@@ -1394,7 +1406,7 @@ class AttorneyWindow(QMainWindow):
             "<div style='text-align:center;'>"
             "<h2 style='color:#1a3a6a;'>PLI — Private Link Interpreter</h2>"
             "<p style='font-size:13px;'>完全オフライン AI 通訳システム</p>"
-            "<p style='font-size:13px;'>Version 2.0.0</p><hr>"
+            f"<p style='font-size:13px;'>Version {__version__}</p><hr>"
             "<p style='font-size:12px; color:#666;'>開発</p>"
             "<p style='font-size:14px; font-weight:bold; color:#1a3a6a;'>中野通り法律事務所<br>弁護士  関  智之</p><hr>"
             "<p style='font-size:10px; color:#999;'>"

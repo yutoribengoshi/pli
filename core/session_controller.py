@@ -440,15 +440,21 @@ class SessionController:
     # ------------------------------------------------------------------
 
     def set_rec_mode(self, mode: RecordMode):
-        """録音モード切替。"""
+        """録音モード切替。録音開始に失敗した場合はOFFへ戻してエラーを通知する。"""
         self.recorder.set_mode(mode)
+        if mode != RecordMode.OFF and not self.recorder.start():
+            # 録音できていないのに「REC」を表示してはならない（録れてたつもり事故防止）
+            error = self.recorder.last_error or "録音を開始できません"
+            self.recorder.set_mode(RecordMode.OFF)
+            self._emit_status(f"録音エラー: {error}")
+            if self._cb_rec_mode_change:
+                self._cb_rec_mode_change(RecordMode.OFF)
+            return
         if mode == RecordMode.OFF:
             self._emit_status("待機中")
         elif mode == RecordMode.VOLATILE:
-            self.recorder.start()
             self._emit_status("REC (揮発)")
         elif mode == RecordMode.SAVE:
-            self.recorder.start()
             self._emit_status("REC (保存)")
         if self._cb_rec_mode_change:
             self._cb_rec_mode_change(mode)

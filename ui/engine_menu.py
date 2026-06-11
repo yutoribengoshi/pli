@@ -13,7 +13,7 @@ import os
 import threading
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QAction, QActionGroup
 from PySide6.QtWidgets import QMenuBar, QMenu, QMessageBox, QProgressDialog
 
@@ -70,6 +70,14 @@ class EngineMenuBuilder(QObject):
     ctx_changed = Signal(int)         # コンテキスト長
     nllb_model_changed = Signal(str)  # NLLBモデルキー
 
+    # --- 内部シグナル：ダウンロードスレッド → メインスレッド GUI 更新 ---
+    # Qt の GUI 操作はメインスレッド限定。ワーカースレッドはこれらを
+    # emit するだけにし、QueuedConnection 経由でメインスレッドのスロットが
+    # QProgressDialog の更新・クローズとメニュー再構築を行う。
+    _dl_progress = Signal(int)        # ダウンロード進捗（0-100 %）
+    _dl_label = Signal(str)           # 進捗ダイアログのラベル文言
+    _dl_finished = Signal(bool, str)  # (成功フラグ, メッセージ)
+
     def __init__(self, interpreter: Interpreter, parent: QObject | None = None):
         super().__init__(parent)
         self.interpreter = interpreter
@@ -85,6 +93,19 @@ class EngineMenuBuilder(QObject):
         self._nllb_menu: QMenu | None = None
         self._nllb_group: QActionGroup | None = None
         self._opus_menu: QMenu | None = None
+
+        # ダウンロード中の進捗ダイアログと、完了時に再構築するメニュー種別
+        # （メインスレッドからのみ読み書きする）
+        self._dl_dialog: QProgressDialog | None = None
+        self._dl_rebuild: str | None = None  # "nllb" / "opus"
+
+        # ワーカースレッド発のシグナルをメインスレッドのスロットへ接続
+        self._dl_progress.connect(
+            self._on_dl_progress, Qt.ConnectionType.QueuedConnection)
+        self._dl_label.connect(
+            self._on_dl_label, Qt.ConnectionType.QueuedConnection)
+        self._dl_finished.connect(
+            self._on_dl_finished, Qt.ConnectionType.QueuedConnection)
 
     # =====================================================================
     #  Public API
@@ -336,19 +357,25 @@ class EngineMenuBuilder(QObject):
             progress = QProgressDialog(
                 "NLLBモデルをダウンロード中...", "キャンセル", 0, 100, parent_widget)
             progress.setWindowTitle("ダウンロード")
+            # キャンセルボタンは snapshot_download を実際には中断できない
+            # （飾りでユーザーを欺くだけ）ため表示しない
+            progress.setCancelButton(None)
             progress.setMinimumDuration(0)
             progress.setValue(0)
 
+            self._dl_dialog = progress
+            self._dl_rebuild = "nllb"
+
+            # ワーカースレッドからの GUI 直接操作は禁止。シグナル emit のみ。
             def _do_download():
                 try:
                     def on_progress(ratio):
-                        progress.setValue(int(ratio * 100))
+                        self._dl_progress.emit(int(ratio * 100))
                     download_model(model_key, on_progress=on_progress)
-                    progress.setValue(100)
+                    self._dl_progress.emit(100)
+                    self._dl_finished.emit(True, "")
                 except Exception as e:
-                    print(f"[error] NLLBダウンロード失敗: {e}")
-                finally:
-                    self._populate_nllb_models()
+                    self._dl_finished.emit(False, f"NLLBダウンロード失敗: {e}")
 
             threading.Thread(target=_do_download, daemon=True).start()
             progress.exec()
@@ -488,19 +515,24 @@ class EngineMenuBuilder(QObject):
             f"OPUS-MT [{pair_key}] ダウンロード中...", "キャンセル",
             0, 100, parent_widget)
         progress.setWindowTitle("ダウンロード")
+        # キャンセルボタンは実際にはダウンロードを中断できないため表示しない
+        progress.setCancelButton(None)
         progress.setMinimumDuration(0)
         progress.setValue(0)
 
+        self._dl_dialog = progress
+        self._dl_rebuild = "opus"
+
+        # ワーカースレッドからの GUI 直接操作は禁止。シグナル emit のみ。
         def _do_download():
             try:
                 def on_progress(ratio):
-                    progress.setValue(int(ratio * 100))
+                    self._dl_progress.emit(int(ratio * 100))
                 download_model(pair_key, on_progress=on_progress)
-                progress.setValue(100)
+                self._dl_progress.emit(100)
+                self._dl_finished.emit(True, "")
             except Exception as e:
-                print(f"[error] OPUS-MT ダウンロード失敗: {e}")
-            finally:
-                self._populate_opus_models()
+                self._dl_finished.emit(False, f"OPUS-MT ダウンロード失敗: {e}")
 
         threading.Thread(target=_do_download, daemon=True).start()
         progress.exec()
@@ -537,23 +569,63 @@ class EngineMenuBuilder(QObject):
             f"OPUS-MT [{tgt}] 一括ダウンロード中...", "キャンセル",
             0, 100, parent_widget)
         progress.setWindowTitle("一括ダウンロード")
+        # キャンセルボタンは実際にはダウンロードを中断できないため表示しない
+        progress.setCancelButton(None)
         progress.setMinimumDuration(0)
         progress.setValue(0)
 
+        self._dl_dialog = progress
+        self._dl_rebuild = "opus"
+
+        # ワーカースレッドからの GUI 直接操作は禁止。シグナル emit のみ。
         def _do_download():
             try:
                 def on_progress(pair_key, ratio):
-                    progress.setLabelText(f"OPUS-MT [{pair_key}] ダウンロード中...")
-                    progress.setValue(int(ratio * 100))
+                    self._dl_label.emit(f"OPUS-MT [{pair_key}] ダウンロード中...")
+                    self._dl_progress.emit(int(ratio * 100))
                 download_pairs_for_lang(tgt, on_progress=on_progress)
-                progress.setValue(100)
+                self._dl_progress.emit(100)
+                self._dl_finished.emit(True, "")
             except Exception as e:
-                print(f"[error] OPUS-MT一括ダウンロード失敗: {e}")
-            finally:
-                self._populate_opus_models()
+                self._dl_finished.emit(False, f"OPUS-MT一括ダウンロード失敗: {e}")
 
         threading.Thread(target=_do_download, daemon=True).start()
         progress.exec()
+
+    # =====================================================================
+    #  ダウンロード進捗 — メインスレッドスロット（QueuedConnection 経由）
+    # =====================================================================
+
+    def _on_dl_progress(self, percent: int):
+        """進捗更新スロット。メインスレッドで実行される。"""
+        if self._dl_dialog is not None:
+            self._dl_dialog.setValue(percent)
+
+    def _on_dl_label(self, text: str):
+        """進捗ダイアログのラベル更新スロット。メインスレッドで実行される。"""
+        if self._dl_dialog is not None:
+            self._dl_dialog.setLabelText(text)
+
+    def _on_dl_finished(self, success: bool, message: str):
+        """ダウンロード完了スロット。メインスレッドで実行される。
+
+        ダイアログを確実に閉じ（キャンセルボタン非表示のため、失敗時に
+        ここで閉じないとモーダルが残り続ける）、対応するメニューを再構築する。
+        """
+        if not success and message:
+            print(f"[error] {message}")
+
+        dlg = self._dl_dialog
+        self._dl_dialog = None
+        if dlg is not None:
+            dlg.close()
+
+        rebuild = self._dl_rebuild
+        self._dl_rebuild = None
+        if rebuild == "nllb":
+            self._populate_nllb_models()
+        elif rebuild == "opus":
+            self._populate_opus_models()
 
     # =====================================================================
     #  ユーティリティ

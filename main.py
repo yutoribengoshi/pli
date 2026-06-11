@@ -16,7 +16,6 @@ All rights reserved.
 
 __author__ = "関智之 (Tomoyuki Seki)"
 __copyright__ = "Copyright (c) 2025-2026 中野通り法律事務所 弁護士 関智之"
-__version__ = "2.0.0"
 __license__ = "Proprietary"
 
 import sys
@@ -27,6 +26,7 @@ from pathlib import Path
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import Qt, QTimer, QObject, Signal
 
+from core.version import __version__  # noqa: F401  バージョン単一ソース
 from core.interpreter import Interpreter, EngineType
 from core.recorder import Recorder, RecordMode
 from core.hide_mode import HideMode, HideSettings
@@ -318,9 +318,14 @@ class PLIApp:
         import subprocess
         model_path = model_path or self.interpreter._model_path or ""
         n_ctx = self._n_ctx if n_ctx is None else n_ctx
-        args = [sys.executable, os.path.abspath(__file__),
-                "--display", self._display_mode,
-                "--engine", self._engine_type_str]
+        if getattr(sys, 'frozen', False):
+            # PyInstaller凍結.app: sys.executable がアプリ本体そのもの。
+            # スクリプトパスを渡すと argv[1] が未知の引数となり新プロセスが即死する
+            args = [sys.executable]
+        else:
+            args = [sys.executable, os.path.abspath(__file__)]
+        args += ["--display", self._display_mode,
+                 "--engine", self._engine_type_str]
         if not self.interpreter.mock:
             args.append("--real")
         if not self.interpreter.mock and self._engine_type_str in ("nllb", "hybrid"):

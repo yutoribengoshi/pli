@@ -8,6 +8,7 @@ All rights reserved.
 
 import os
 import threading
+import time
 from typing import Callable, Optional
 
 # --- 分割モジュールからの再エクスポート（後方互換性維持） ---
@@ -142,6 +143,19 @@ class Interpreter:
                     self._load_llm(on_progress)
                 with self._state_lock:
                     self._translation_ready = True
+                # P0-4: HYBRIDで1モデルもロードできなかった場合（NLLBなし・
+                # OPUSペアなし）は翻訳未準備として扱う（偽の「✓準備完了」防止）
+                if (self._engine_type == EngineType.HYBRID
+                        and not getattr(self.engine, "is_ready", True)):
+                    no_model_msg = (
+                        "翻訳モデルが未ダウンロードです。"
+                        "メニュー「エンジン」からモデルをダウンロードしてください。"
+                    )
+                    with self._state_lock:
+                        self._translation_ready = False
+                        self._model_load_error = no_model_msg
+                    load_errors.append(no_model_msg)
+                    print(f"[warn] {no_model_msg}")
             except Exception as e:
                 with self._state_lock:
                     self._translation_ready = False

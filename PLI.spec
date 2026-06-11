@@ -83,6 +83,7 @@ hiddenimports = [
     'huggingface_hub',
     # Audio
     'pyaudio',
+    'sounddevice',
     # Document export
     'docx',
     'docx.oxml',
@@ -155,7 +156,7 @@ exe = EXE(
     upx=False,
     console=False,  # GUI app, no terminal
     disable_windowed_traceback=False,
-    argv_emulation=True,  # macOS: support file open events
+    argv_emulation=False,  # True breaks hardened-runtime signed apps; file open events not needed
     target_arch='arm64',  # Apple Silicon
     codesign_identity=CODESIGN_IDENTITY,
     entitlements_file=ENTITLEMENTS_FILE,
@@ -183,7 +184,7 @@ app = BUNDLE(
         'CFBundleDisplayName': 'PLI - Private Link Interpreter',
         'CFBundleVersion': APP_VERSION,
         'CFBundleShortVersionString': APP_VERSION,
-        'NSMicrophoneUsageDescription': 'PLI needs microphone access for real-time speech-to-text interpretation.',
+        'NSMicrophoneUsageDescription': '接見・法廷での通訳のため、マイクで音声を認識します。音声は外部に送信されません。',
         'NSHumanReadableCopyright': 'Copyright 2025-2026 中野通り法律事務所 弁護士 関智之 (Tomoyuki Seki). All rights reserved.',
         'LSMinimumSystemVersion': '12.0',
         'NSHighResolutionCapable': True,

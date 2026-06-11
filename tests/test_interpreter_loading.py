@@ -48,6 +48,35 @@ class InterpreterLoadingTests(unittest.TestCase):
         self.assertFalse(interpreter.stt_ready)
         self.assertEqual(interpreter.model_load_state, "degraded")
 
+    def test_hybrid_with_zero_models_sets_translation_not_ready(self):
+        """P0-4回帰: HybridEngineが1モデルも積めなかったら翻訳未準備として扱う"""
+        interpreter = Interpreter(mock=False, engine_type=EngineType.HYBRID)
+        done = threading.Event()
+        result = {}
+
+        class _EmptyHybrid:
+            is_ready = False  # NLLBなし・OPUSペアなしの状態を模擬
+
+        def _fake_load_hybrid(on_progress):
+            interpreter.engine = _EmptyHybrid()
+
+        with mock.patch.object(interpreter, "_load_hybrid", side_effect=_fake_load_hybrid), \
+                mock.patch("core.interpreter.WhisperSTT", return_value=object()):
+            interpreter.load_models_async(
+                on_ready=lambda ready, message: (
+                    result.update({"ready": ready, "message": message}),
+                    done.set(),
+                )
+            )
+            self.assertTrue(done.wait(1.0))
+
+        self.assertFalse(result["ready"])
+        self.assertIn("翻訳モデルが未ダウンロード", result["message"])
+        self.assertFalse(interpreter.translation_ready)
+        self.assertTrue(interpreter.stt_ready)
+        self.assertEqual(interpreter.model_load_state, "degraded")
+        self.assertFalse(interpreter._models_ready)
+
 
 if __name__ == "__main__":
     unittest.main()

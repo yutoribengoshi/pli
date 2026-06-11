@@ -50,15 +50,46 @@ class Recorder:
     def set_save_dir(self, path: str):
         self._save_dir = path
 
-    def start(self):
-        if self.mode == RecordMode.OFF or self._recording:
-            return
-        self._recording = True
+    @property
+    def last_error(self) -> Optional[str]:
+        """直近の録音エラーメッセージ（正常時はNone）"""
+        return self._error
+
+    def start(self) -> bool:
+        """録音を開始する。
+
+        Returns:
+            True: 録音開始成功（既に録音中の場合を含む）
+            False: モードOFF、または録音デバイス初期化失敗（last_errorに理由を設定）
+        """
+        if self.mode == RecordMode.OFF:
+            return False
+        if self._recording:
+            return True
         self._error = None
+        # デバイス初期化は start() 内で同期的に行い、失敗を即座に呼び出し元へ返す。
+        # 注意: 失敗時に無音ダミーへフォールバックしてはならない
+        # （無音を「録音中」と偽ると、接見後に何も録れていない事故になる）。
+        try:
+            import sounddevice as sd
+            stream = sd.RawInputStream(
+                samplerate=self._sample_rate,
+                channels=self._channels,
+                dtype='int16',
+                blocksize=1024,
+            )
+            stream.start()
+        except Exception as e:
+            self._error = "録音デバイスを初期化できません。マイク接続と権限を確認してください。"
+            print(f"[error] recorder: 録音開始失敗: {e}")
+            return False
+        self._stream = stream
         with self._buffer_lock:
             self._buffer = io.BytesIO()
+        self._recording = True
         self._thread = threading.Thread(target=self._record_loop, daemon=True)
         self._thread.start()
+        return True
 
     def stop(self):
         self._stop_recording_thread()
@@ -85,30 +116,19 @@ class Recorder:
         self._audio = None
 
     def _record_loop(self):
-        """sounddeviceによる録音ループ"""
+        """sounddeviceによる録音ループ（ストリームは start() で開設済み）"""
+        stream = self._stream
         try:
-            import sounddevice as sd
-            self._stream = sd.RawInputStream(
-                samplerate=self._sample_rate,
-                channels=self._channels,
-                dtype='int16',
-                blocksize=1024,
-            )
-            self._stream.start()
-            while self._recording:
-                data, overflowed = self._stream.read(1024)
+            while self._recording and stream is not None:
+                data, overflowed = stream.read(1024)
                 with self._buffer_lock:
                     self._buffer.write(bytes(data))
-        except ImportError:
-            # sounddevice未インストール時はダミー録音
-            while self._recording:
-                silence = b'\x00\x00' * 1024
-                with self._buffer_lock:
-                    self._buffer.write(silence)
-                time.sleep(1024 / self._sample_rate)
         except Exception as e:
-            self._error = str(e)
-            print(f"[error] recorder: {e}")
+            # stop()/wipe() がストリームを閉じた際の例外はエラー扱いしない
+            if self._recording:
+                self._error = f"録音が中断されました: {e}"
+                self._recording = False
+                print(f"[error] recorder: {e}")
         finally:
             self._close_audio_handles()
 
