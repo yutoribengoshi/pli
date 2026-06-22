@@ -257,7 +257,15 @@ def detect_unknown_words(
 # ---------------------------------------------------------------------------
 
 def make_translate_system(target_lang: str) -> str:
-    """対象言語に応じた翻訳プロンプトを生成"""
+    """対象言語に応じた翻訳プロンプトを生成
+
+    環境変数 PLI_LEAN_PROMPT が設定されている場合（主にWindows等のCPU推論）、
+    few-shot例を省いた軽量プロンプトを返す。CPUではプロンプトのプレフィルが
+    支配的（実測: few-shotで1文5.3秒→leanで2.1秒）であり、few-shotの精度寄与は
+    法律辞書の動的注入と重複するため、CPU環境では辞書注入だけで十分。
+    Apple Silicon GPU環境ではfew-shotは無コストなのでデフォルトで付与する。
+    """
+    import os as _os
     lang_name = get_language_name(target_lang)
     lang_native = get_language_native(target_lang)
     base = f"""あなたは接見室に同席する中立な通訳者です。
@@ -267,6 +275,8 @@ def make_translate_system(target_lang: str) -> str:
 4. 許可されていない私的なアドバイスは行わず、翻訳に徹してください。
 5. 入力に「法律用語訳語」の指定がある場合は、必ずその訳語を使ってください。
 翻訳文のみを出力し、説明は不要です。"""
+    if _os.environ.get("PLI_LEAN_PROMPT"):
+        return base  # CPU環境: few-shot省略（速度優先、精度は辞書注入で担保）
     # few-shot（静的＝prefixキャッシュ可能）。英語は全言語話者の参照基準になるため
     # 日→英で2例だけ示す。対象が日本語のときは英→日に反転。
     if target_lang == "ja":

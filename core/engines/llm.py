@@ -35,65 +35,75 @@ class LLMEngine:
       Max    (64GB+): Qwen3-235B-A22B-Q2_K_L (~58GB, MoE 22B活性)
     """
 
-    # ティア別モデル定義
+    # ティア別モデル定義（2026-06 実測検証ベース）
+    # macOS は Metal GPU（統合メモリ）、Windows は CPU推論前提（業務ノートは
+    # NVIDIA非搭載が大半）。CPU環境では PLI_LEAN_PROMPT=1 を併用し few-shot を
+    # 省くことで 1文5.3秒→2.1秒（Mac CPU実測）に短縮する。
     TIERS = {
         # --- macOS (Apple Silicon, Metal GPU, 統合メモリ) ---
         "standard": {
-            "model": "Qwen3-8B-Q4_K_M.gguf",
+            "model": "Qwen3.5-9B-Q4_K_M.gguf",  # 実測 0.5秒/文(GPU)・201言語
             "min_memory_gb": 16,
             "ctx_size": 2048,
             "threads": 4,
             "gpu_layers": 99,
-            "description": "Standard (16GB Mac)",
+            "lean_prompt": False,
+            "description": "Standard (16GB Mac) Qwen3.5-9B",
         },
         "pro": {
-            "model": "Qwen3.5-35B-A3B-UD-IQ2_M.gguf",
+            "model": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",  # MoE 3B活性、9Bより高品質
             "min_memory_gb": 32,
             "ctx_size": 4096,
             "threads": 4,
             "gpu_layers": 99,
-            "description": "Pro (32GB+ Mac, MoE 3B active)",
+            "lean_prompt": False,
+            "description": "Pro (32GB+ Mac, MoE 3B active) Qwen3.6-35B-A3B",
         },
         "max": {
-            "model": "Qwen3-235B-A22B-Q2_K_L-00001-of-00002.gguf",
+            "model": "Qwen2.5-72B-Instruct-Q4_K_M.gguf",  # 実測 全7言語18/18 最高品質
             "min_memory_gb": 64,
             "ctx_size": 8192,
             "threads": 4,
             "gpu_layers": 99,
-            "description": "Max (64GB+ Mac, MoE 22B active)",
+            "lean_prompt": False,
+            "description": "Max (64GB+ Mac) Qwen2.5-72B 最高品質",
         },
-        # --- Windows (CPU推論 or CUDA) ---
+        # --- Windows (CPU推論前提。NVIDIA搭載時のみ win_cuda) ---
         "win_low": {
-            "model": "Qwen3-4B-Q4_K_M.gguf",
-            "min_memory_gb": 16,
+            "model": "Qwen3.5-4B-Q4_K_M.gguf",  # 8GB機向け軽量
+            "min_memory_gb": 8,
             "ctx_size": 2048,
             "threads": 4,
             "gpu_layers": 0,
-            "description": "Windows Low (16GB, CPU-only)",
+            "lean_prompt": True,  # CPU: few-shot省略で高速化
+            "description": "Windows Low (8GB, CPU) Qwen3.5-4B",
         },
         "win_mid": {
-            "model": "Qwen3-8B-Q4_K_M.gguf",
+            "model": "Qwen3.5-9B-Q4_K_M.gguf",  # 推定 4〜8秒/文(Win CPU, lean)
             "min_memory_gb": 16,
-            "ctx_size": 4096,
-            "threads": 6,
+            "ctx_size": 2048,
+            "threads": 8,
             "gpu_layers": 0,
-            "description": "Windows Mid (16GB, AVX-512)",
+            "lean_prompt": True,
+            "description": "Windows Mid (16GB, CPU) Qwen3.5-9B",
         },
         "win_high": {
-            "model": "Qwen3-32B-Q4_K_M.gguf",
+            "model": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",  # MoE3B活性=CPUでも実用、高品質
             "min_memory_gb": 32,
             "ctx_size": 4096,
             "threads": 8,
             "gpu_layers": 0,
-            "description": "Windows High (32GB+)",
+            "lean_prompt": True,
+            "description": "Windows High (32GB, CPU MoE) Qwen3.6-35B-A3B",
         },
         "win_cuda": {
-            "model": "Qwen3-8B-Q4_K_M.gguf",
+            "model": "Qwen3.5-9B-Q4_K_M.gguf",
             "min_memory_gb": 16,
             "ctx_size": 4096,
             "threads": 4,
             "gpu_layers": 99,
-            "description": "Windows CUDA (NVIDIA GPU 8GB+)",
+            "lean_prompt": False,  # GPUなら few-shot 付けても無コスト
+            "description": "Windows CUDA (NVIDIA GPU 8GB+) Qwen3.5-9B",
         },
     }
 
@@ -271,6 +281,9 @@ class LLMEngine:
         tier_info = self.TIERS.get(tier_name, {})
         threads = str(tier_info.get("threads", 4))
         gpu_layers = tier_info.get("gpu_layers", 0)
+        # CPU推論ティアでは few-shot を省いて速度を確保（make_translate_system が参照）
+        if tier_info.get("lean_prompt"):
+            os.environ["PLI_LEAN_PROMPT"] = "1"
 
         # llama-server 起動コマンド（メモリ最適化オプション付き）
         cmd = [
