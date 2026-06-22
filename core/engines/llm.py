@@ -423,6 +423,7 @@ class LLMEngine:
     def _chat_api(self, messages: list, max_tokens: int = 256, stream: bool = False):
         """HTTP API 経由で llama-server に問い合わせ"""
         import urllib.request
+        import urllib.error
         payload = self._json.dumps({
             "model": "local",
             "messages": messages,
@@ -441,27 +442,49 @@ class LLMEngine:
         )
         if stream:
             return self._stream_api(req)
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = self._json.loads(resp.read())
-        return data["choices"][0]["message"]["content"].strip()
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = self._json.loads(resp.read())
+            return data["choices"][0]["message"]["content"].strip()
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
+            self._ready = False  # 次回 _ensure_loaded で再接続を試みる
+            raise RuntimeError(
+                "翻訳サーバーに接続できません。サーバーが起動しているか確認してください。"
+            ) from e
 
     def _stream_api(self, req):
         """SSE ストリーミング応答をチャンク生成"""
         import urllib.request
-        resp = urllib.request.urlopen(req, timeout=60)
-        buffer = ""
-        for line_bytes in resp:
-            line = line_bytes.decode("utf-8", errors="replace").strip()
-            if not line or not line.startswith("data: "):
-                continue
-            data_str = line[6:]
-            if data_str == "[DONE]":
-                break
+        import urllib.error
+        try:
+            resp = urllib.request.urlopen(req, timeout=60)
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
+            self._ready = False
+            raise RuntimeError(
+                "翻訳サーバーに接続できません。サーバーが起動しているか確認してください。"
+            ) from e
+        try:
+            for line_bytes in resp:
+                line = line_bytes.decode("utf-8", errors="replace").strip()
+                if not line or not line.startswith("data: "):
+                    continue
+                data_str = line[6:]
+                if data_str == "[DONE]":
+                    break
+                try:
+                    chunk = self._json.loads(data_str)
+                    yield chunk
+                except self._json.JSONDecodeError:
+                    continue
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError) as e:
+            # ストリーミング途中の切断もスレッドを殺さず伝播
+            self._ready = False
+            raise RuntimeError("翻訳サーバーとの通信が中断されました。") from e
+        finally:
             try:
-                chunk = self._json.loads(data_str)
-                yield chunk
-            except self._json.JSONDecodeError:
-                continue
+                resp.close()
+            except Exception:
+                pass
         resp.close()
 
     def _inject_glossary(self, text: str, src_lang: str, user_msg: str) -> str:

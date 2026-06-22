@@ -234,6 +234,29 @@ class WhisperSTT:
                 model_name, device="cpu", compute_type="int8",
             )
 
+    @staticmethod
+    def _decode_wav_mono16k(path: str):
+        """PCM16 WAV を float32 mono ndarray にデコードする（ffmpeg非依存）。
+
+        mlx-whisper はパスを渡すと内部で ffmpeg CLI を呼ぶため、PyInstaller
+        で固めた .app では STT が動かない（ffmpeg非同梱・PATH外）。自前で
+        wave+numpy デコードして ndarray を渡すことで ffmpeg 依存を断つ。
+        PLIのSTTは常に16kHz/mono/PCM16のWAVを生成するため前提を満たす。
+        """
+        import wave
+        import numpy as np
+        with wave.open(path, "rb") as w:
+            sampwidth = w.getsampwidth()
+            n_ch = w.getnchannels()
+            raw = w.readframes(w.getnframes())
+        if sampwidth != 2:
+            # 想定外フォーマットはパスのまま返し、呼び出し側のフォールバックに委ねる
+            raise ValueError(f"unsupported sample width: {sampwidth}")
+        audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+        if n_ch > 1:
+            audio = audio.reshape(-1, n_ch).mean(axis=1)
+        return audio
+
     def transcribe(self, audio_path: str,
                    initial_prompt: str = LEGAL_ASR_PROMPT) -> tuple[str, str]:
         """音声を書き起こす。
@@ -245,8 +268,15 @@ class WhisperSTT:
                 他言語認識には影響しない。空文字で無効化可能。
         """
         if self._backend == "mlx":
+            # WAVを自前デコードしてndarrayで渡す（ffmpeg依存を断つ）。
+            # デコード失敗時のみパス渡しにフォールバック。
+            try:
+                audio_input = self._decode_wav_mono16k(audio_path)
+            except Exception as e:
+                logger.warning("WAV自前デコード失敗、パス渡しにフォールバック: %s", e)
+                audio_input = audio_path
             result = self._mlx_whisper.transcribe(
-                audio_path,
+                audio_input,
                 path_or_hf_repo=self._repo,
                 initial_prompt=initial_prompt or None,
             )
