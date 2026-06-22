@@ -847,21 +847,9 @@ class DictionaryDialog(QDialog):
 
     @staticmethod
     def _load_legal_dict() -> list[dict]:
-        """法律用語辞書を読み込む"""
-        import json
-        paths = [
-            os.path.expanduser("~/pli-models/legal_dict.json"),
-            os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "legal_dict.json"),
-        ]
-        for p in paths:
-            if os.path.exists(p):
-                try:
-                    with open(p, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    return data.get("entries", [])
-                except Exception:
-                    continue
-        return []
+        """法律用語辞書を読み込む（core.legal_dict に集約済み）"""
+        from core.legal_dict import load_legal_dict
+        return list(load_legal_dict())
 
     def _search_dict(self, query: str, ja_to_foreign: bool) -> list[dict]:
         """辞書から部分一致で検索。結果は [{ja, en, category}, ...]"""

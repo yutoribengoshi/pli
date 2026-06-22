@@ -45,6 +45,8 @@ class ConversationBubble(QFrame):
     # 修正・取消ボタンのシグナル
     edit_clicked = Signal(object)    # self を送出
     cancel_clicked = Signal(object)  # self を送出
+    # 同音異義の差し替え: (self, 元の表記, 新しい表記) を送出
+    homophone_swap = Signal(object, str, str)
 
     def __init__(self, utterance: Utterance, show_actions: bool = False, parent=None):
         super().__init__(parent)
@@ -97,6 +99,9 @@ class ConversationBubble(QFrame):
         )
         _selectable(original)
         text_layout.addWidget(original)
+
+        # 同音異義の候補チップ（接見↔石鹸 等。出現したグループ語にだけ表示）
+        self._add_homophone_chips(text_layout)
 
         # 英語中間文（ピボット翻訳時のみ表示）
         if self.utterance.intermediate_en:
@@ -169,8 +174,43 @@ class ConversationBubble(QFrame):
         layout.addLayout(text_layout, stretch=1)
         self.setStyleSheet("background: transparent; border: none;")
 
+    def _add_homophone_chips(self, text_layout):
+        """原文に同音異義グループ語があれば、別候補への差し替えチップを出す。
+
+        例: 「接見」を含む発話に「🔄 石鹸?」を出し、タップで原文の接見を石鹸に
+        差し替えて再翻訳する。バイアス過剰（接見↔石鹸）もバイアス失敗（交流↔勾留）
+        も同じ仕組みで1タップ訂正できる。
+        """
+        try:
+            from core.homophones import find_homophone_candidates
+            cands = find_homophone_candidates(self.utterance.original or "")
+        except Exception:
+            cands = []
+        if not cands:
+            return
+        chip_row = QHBoxLayout()
+        chip_row.setSpacing(4)
+        chip_row.setContentsMargins(4, 0, 0, 0)
+        for surface, alts in cands:
+            for alt in alts:
+                btn = QPushButton(f"🔄 {surface}→{alt}?")
+                btn.setFixedHeight(22)
+                btn.setCursor(Qt.PointingHandCursor)
+                btn.setToolTip(f"「{surface}」を「{alt}」に直して再翻訳")
+                btn.setStyleSheet(
+                    f"background-color: {_SURFACE}; color: {_DIM};"
+                    f" font-size: 11px; padding: 1px 8px; border: 1px solid {_RAISED_D};"
+                    f" border-radius: 11px;"
+                )
+                btn.clicked.connect(
+                    lambda _=False, s=surface, a=alt: self.homophone_swap.emit(self, s, a)
+                )
+                chip_row.addWidget(btn)
+        chip_row.addStretch()
+        text_layout.addLayout(chip_row)
+
     def contextMenuEvent(self, event):
-        """右クリック → コピーメニュー"""
+        """右クリック → コピー＋同音異義差し替えメニュー"""
         from PySide6.QtWidgets import QMenu, QApplication
         menu = QMenu(self)
         copy_all = menu.addAction("📋 原文＋訳文をコピー")
@@ -178,7 +218,24 @@ class ConversationBubble(QFrame):
         copy_trans = menu.addAction("訳文のみコピー")
         menu.addSeparator()
         copy_conv = menu.addAction("📋 全会話コピー")
+        # 同音異義の差し替え候補
+        swap_actions = {}
+        try:
+            from core.homophones import find_homophone_candidates
+            cands = find_homophone_candidates(self.utterance.original or "")
+        except Exception:
+            cands = []
+        if cands:
+            menu.addSeparator()
+            for surface, alts in cands:
+                for alt in alts:
+                    a = menu.addAction(f"🔄 「{surface}」を「{alt}」に直して再翻訳")
+                    swap_actions[a] = (surface, alt)
         action = menu.exec(event.globalPos())
+        if action in swap_actions:
+            s, a = swap_actions[action]
+            self.homophone_swap.emit(self, s, a)
+            return
         u = self.utterance
         if action == copy_all:
             parts = [u.original]

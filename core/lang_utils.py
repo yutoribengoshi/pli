@@ -260,12 +260,28 @@ def make_translate_system(target_lang: str) -> str:
     """対象言語に応じた翻訳プロンプトを生成"""
     lang_name = get_language_name(target_lang)
     lang_native = get_language_native(target_lang)
-    return f"""あなたは接見室に同席する中立な通訳者です。
+    base = f"""あなたは接見室に同席する中立な通訳者です。
 1. 入力された発言を、意図を変えずに正確に翻訳してください。
 2. 刑事手続き上の専門用語（勾留、接見禁止、起訴状など）を適切に扱ってください。
 3. 翻訳先言語は{lang_name}（{lang_native}）です。
 4. 許可されていない私的なアドバイスは行わず、翻訳に徹してください。
+5. 入力に「法律用語訳語」の指定がある場合は、必ずその訳語を使ってください。
 翻訳文のみを出力し、説明は不要です。"""
+    # few-shot（静的＝prefixキャッシュ可能）。英語は全言語話者の参照基準になるため
+    # 日→英で2例だけ示す。対象が日本語のときは英→日に反転。
+    if target_lang == "ja":
+        examples = """
+
+例:
+I was arrested for violating the Stimulant Drugs Control Act. → 覚醒剤取締法違反で逮捕されました
+I will exercise my right to remain silent. → 黙秘権を行使します"""
+    else:
+        examples = """
+
+例:
+覚醒剤取締法違反で逮捕されました → I was arrested for violating the Stimulant Drugs Control Act.
+黙秘権を行使します → I will exercise my right to remain silent."""
+    return base + examples
 
 
 def make_syntax_check_system(target_lang: str) -> str:

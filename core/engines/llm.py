@@ -464,10 +464,28 @@ class LLMEngine:
                 continue
         resp.close()
 
+    def _inject_glossary(self, text: str, src_lang: str, user_msg: str) -> str:
+        """入力文に出現した法律用語の正式訳を user メッセージ先頭に注入する。
+
+        systemプロンプトは不変に保つ（prefixキャッシュ保全＝レイテンシ対策）。
+        当面 ja 起点のみ対応。辞書未配置・未マッチ・例外時は素通り。
+        """
+        if src_lang != "ja":
+            return user_msg
+        try:
+            from core.legal_dict import retrieve_terms, format_glossary_for_prompt
+            block = format_glossary_for_prompt(retrieve_terms(text, max_terms=8))
+        except Exception:
+            return user_msg
+        if not block:
+            return user_msg
+        return f"{block}\n\n{user_msg}"
+
     def translate(self, text: str, src_lang: str, tgt_lang: str) -> str:
         src_name = "日本語" if src_lang == "ja" else get_language_name(src_lang)
         tgt_name = "日本語" if tgt_lang == "ja" else get_language_name(tgt_lang)
         user_msg = f"{src_name}を{tgt_name}に翻訳:\n{text}"
+        user_msg = self._inject_glossary(text, src_lang, user_msg)
         system = make_translate_system(tgt_lang)
         return self._chat(system, user_msg)
 
@@ -475,6 +493,7 @@ class LLMEngine:
         src_name = "日本語" if src_lang == "ja" else get_language_name(src_lang)
         tgt_name = "日本語" if tgt_lang == "ja" else get_language_name(tgt_lang)
         user_msg = f"{src_name}を{tgt_name}に翻訳:\n{text}"
+        user_msg = self._inject_glossary(text, src_lang, user_msg)
         system = make_translate_system(tgt_lang)
         for chunk in self._chat(system, user_msg, stream=True):
             delta = chunk["choices"][0]["delta"].get("content", "")

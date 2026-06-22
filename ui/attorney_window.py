@@ -762,6 +762,7 @@ class AttorneyWindow(QMainWindow):
         bubble = ConversationBubble(utt, show_actions=True)
         bubble.edit_clicked.connect(self._on_bubble_edit)
         bubble.cancel_clicked.connect(self._on_bubble_cancel)
+        bubble.homophone_swap.connect(self._on_homophone_swap)
         self.log_layout.addWidget(bubble)
         self._last_attorney_bubble = bubble
         self._scroll_to_bottom()
@@ -809,6 +810,7 @@ class AttorneyWindow(QMainWindow):
         bubble = ConversationBubble(utt, show_actions=True)
         bubble.edit_clicked.connect(self._on_bubble_edit)
         bubble.cancel_clicked.connect(self._on_bubble_cancel)
+        bubble.homophone_swap.connect(self._on_homophone_swap)
         self.log_layout.addWidget(bubble)
         self._last_attorney_bubble = bubble
         self._scroll_to_bottom()
@@ -824,6 +826,7 @@ class AttorneyWindow(QMainWindow):
         bubble = ConversationBubble(utt, show_actions=True)
         bubble.edit_clicked.connect(self._on_bubble_edit)
         bubble.cancel_clicked.connect(self._on_bubble_cancel)
+        bubble.homophone_swap.connect(self._on_homophone_swap)
         self.log_layout.addWidget(bubble)
         self._last_attorney_bubble = bubble
         self._scroll_to_bottom()
@@ -886,6 +889,26 @@ class AttorneyWindow(QMainWindow):
             self._last_attorney_bubble = None
         self.send_to_defendant.emit("clear_last", "")
         self.status_bar.showMessage("取り消しました")
+
+    def _on_homophone_swap(self, bubble, surface: str, alt: str):
+        """同音異義の差し替え: 原文の surface を alt に直して入力欄へ。
+
+        既存の修正経路を再利用し、差し替えたテキストを入力欄にプリフィルする。
+        弁護人がEnterで確定すれば再翻訳される（最終確認は人間に委ねる安全方式）。
+        """
+        utt = bubble.utterance
+        swapped = (utt.original or "").replace(surface, alt)
+        self._drop_pending_attorney_request(bubble)
+        if utt in self.interpreter.conversation:
+            self.interpreter.conversation.remove(utt)
+        bubble.setParent(None)
+        bubble.deleteLater()
+        if self._last_attorney_bubble is bubble:
+            self._last_attorney_bubble = None
+        self.send_to_defendant.emit("clear_last", "")
+        self.input_field.setText(swapped)
+        self.input_field.setFocus()
+        self.status_bar.showMessage(f"「{surface}」→「{alt}」に直しました。Enterで再送信")
 
     def _on_def_bubble_edit(self, bubble):
         self._editing_def_bubble = bubble
@@ -1266,6 +1289,7 @@ class AttorneyWindow(QMainWindow):
             if utt.speaker == Speaker.ATTORNEY:
                 bubble.edit_clicked.connect(self._on_bubble_edit)
                 bubble.cancel_clicked.connect(self._on_bubble_cancel)
+                bubble.homophone_swap.connect(self._on_homophone_swap)
                 self._last_attorney_bubble = bubble
             else:
                 bubble.edit_clicked.connect(self._on_def_bubble_edit)
