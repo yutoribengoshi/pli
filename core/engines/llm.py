@@ -429,6 +429,10 @@ class LLMEngine:
             "max_tokens": max_tokens,
             "temperature": 0.1,
             "stream": stream,
+            # Qwen3.5/3.6 等の思考(reasoning)モデルでは思考を無効化する。
+            # これがないと翻訳本文が空になり長考でタイムアウトする。
+            # Qwen2.5 等の非思考モデルでは無視されるため無害。
+            "chat_template_kwargs": {"enable_thinking": False},
         }).encode()
         req = urllib.request.Request(
             f"{self._api_base}/v1/chat/completions",
