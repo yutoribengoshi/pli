@@ -589,7 +589,9 @@ class AttorneyWindow(QMainWindow):
         stt_menu.addSeparator()
         sens_menu = stt_menu.addMenu("🎚 マイク感度")
         self._sens_group = QActionGroup(self)
-        for key, label in [("high", "高感度（小声でも拾う）"), ("normal", "標準"), ("low", "低感度（ノイズ環境）")]:
+        for key, label in [("ultra", "超高感度（ガラス越し・ささやき声）"),
+                           ("high", "高感度（小声でも拾う）"), ("normal", "標準"),
+                           ("low", "低感度（ノイズ環境）")]:
             act = QAction(label, self, checkable=True)
             if key == "normal":
                 act.setChecked(True)
@@ -1456,8 +1458,15 @@ class AttorneyWindow(QMainWindow):
         super().keyPressEvent(event)
 
     def _scroll_to_bottom(self):
+        sb = self.scroll_area.verticalScrollBar()
+        # 呼び出し時点（新コンテンツで最大値が伸びる前）で最下部付近にいたかを判定。
+        # 先生が上にスクロールして過去ログを読んでいる時は追従しない
+        # （チャットアプリ標準の「stick to bottom」挙動）。
+        was_at_bottom = (sb.maximum() - sb.value()) <= 120
+        if not was_at_bottom:
+            return
+
         def _do_scroll():
-            sb = self.scroll_area.verticalScrollBar()
             sb.setValue(sb.maximum())
         QTimer.singleShot(50, _do_scroll)
         QTimer.singleShot(200, _do_scroll)

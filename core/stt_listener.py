@@ -68,6 +68,52 @@ def classify_mic_error(exc: Exception) -> str:
     return ""
 
 
+# Whisperがノイズ・無音から生成しがちな定型幻覚
+# （実接見ログで「ありがとうございました」「ご視聴〜」のすり抜けを確認して拡充）
+_HALLUCINATIONS = {
+    "thank you", "thanks",
+    "thank you for watching", "thanks for watching",
+    "please subscribe", "like and subscribe",
+    "you", "bye", "the end",
+    "so", "oh", "um", "uh", "hmm", "okay",
+    "ご視聴ありがとうございました", "チャンネル登録お願いします",
+    "ありがとうございました", "ありがとうございます",
+    "ご視聴ありがとうございます",
+    "おやすみなさい", "ではまた", "お疲れ様でした",
+}
+
+
+def _is_repetition(s: str) -> bool:
+    """反復幻覚を検出。
+
+    - 「場場場場…」型: 異なり文字が極端に少ない
+    - 「スライドスライドスライド…」型: 短い語句の周期繰り返し
+      （(s+s).find(s,1) が最小周期を返す古典テク。周期が全長の1/3以下
+      ＝3回以上の繰り返しなら幻覚と判定。実接見で発生）
+    """
+    stripped = s.replace(" ", "").replace("　", "")
+    n = len(stripped)
+    if n >= 10 and len(set(stripped)) <= 2:
+        return True
+    if n >= 9:
+        period = (stripped + stripped).find(stripped, 1)
+        if 0 < period <= n // 3:
+            return True
+    return False
+
+
+def is_hallucination_text(text: str) -> bool:
+    """STT結果がWhisper幻覚（無音・ノイズ由来の定型文/反復）かを判定する。
+
+    日本語句読点も含めて正規化する（旧実装はASCII "." のみ剥がしており
+    「〜ました。」の全角句点付き幻覚がすり抜けていた）。
+    """
+    if len(text) <= 1:
+        return True
+    text_norm = text.lower().strip().strip(".。、，…!！?？ 　")
+    return text_norm in _HALLUCINATIONS or _is_repetition(text)
+
+
 class STTListener:
     """マイク → VAD → Whisper のリアルタイムパイプライン"""
 
@@ -103,6 +149,7 @@ class STTListener:
         self._auto_threshold = True
         self._ambient_energy = 0
         self._sensitivity_multiplier = 1.8  # 閾値 = ノイズ × この値
+        self._threshold_floor = 200         # 閾値の下限（感度プリセット連動）
 
         # プリセット名（UI表示用）
         self._sensitivity_preset = "normal"  # "high" / "normal" / "low"
@@ -111,19 +158,28 @@ class STTListener:
         self._temp_dir = tempfile.mkdtemp(prefix="pli-stt-")
 
     def set_sensitivity(self, preset: str):
-        """マイク感度プリセット: high(高感度) / normal(標準) / low(低感度・ノイズ環境)"""
+        """マイク感度プリセット: ultra(超高感度) / high(高感度) / normal(標準) / low(低感度)
+
+        (multiplier, floor): 閾値 = max(floor, ノイズ × multiplier)。
+        床値が一律200だと、静かな接見室ではガラス越しの小声（エネルギー
+        100〜180程度）が床に弾かれて全く拾えない — 実接見で発生したため
+        床もプリセット連動にした。ultraはガラス壁・アクリル板越し用。
+        """
         presets = {
-            "high":   1.3,   # ノイズ × 1.3 → 小声でも拾う
-            "normal": 1.8,   # ノイズ × 1.8 → 標準
-            "low":    2.5,   # ノイズ × 2.5 → 大きい声だけ拾う
+            "ultra":  (1.1, 80),    # ガラス越し・ささやき声（誤検出は幻覚フィルタで吸収）
+            "high":   (1.3, 120),   # 小声でも拾う
+            "normal": (1.8, 200),   # 標準
+            "low":    (2.5, 300),   # 大きい声だけ拾う（ノイズ環境）
         }
         if preset not in presets:
             return
         self._sensitivity_preset = preset
-        self._sensitivity_multiplier = presets[preset]
+        self._sensitivity_multiplier, self._threshold_floor = presets[preset]
         # 既にキャリブレーション済みなら閾値を再計算
         if self._ambient_energy > 0:
-            self._energy_threshold = max(200, self._ambient_energy * self._sensitivity_multiplier)
+            self._energy_threshold = max(
+                self._threshold_floor,
+                self._ambient_energy * self._sensitivity_multiplier)
             logger.info("STT感度変更: %s → 閾値=%.0f", preset, self._energy_threshold)
 
     def set_tempo(self, preset: str):
@@ -176,7 +232,7 @@ class STTListener:
                 avg = sum(energies) / len(energies)
                 self._ambient_energy = avg
                 # 閾値 = 環境ノイズ × 感度倍率（最低200）
-                self._energy_threshold = max(200, avg * self._sensitivity_multiplier)
+                self._energy_threshold = max(self._threshold_floor, avg * self._sensitivity_multiplier)
                 logger.info("STT環境ノイズ: %.0f, 閾値: %.0f (×%s)",
                             avg, self._energy_threshold, self._sensitivity_multiplier)
         except Exception as e:
@@ -254,7 +310,7 @@ class STTListener:
                 if energies:
                     avg = sum(energies) / len(energies)
                     self._ambient_energy = avg
-                    self._energy_threshold = max(200, avg * self._sensitivity_multiplier)
+                    self._energy_threshold = max(self._threshold_floor, avg * self._sensitivity_multiplier)
                     logger.info("STT自動キャリブレーション: ノイズ=%.0f, 閾値=%.0f (×%s)",
                                 avg, self._energy_threshold, self._sensitivity_multiplier)
 
@@ -355,34 +411,9 @@ class STTListener:
             logger.debug("STT 音声=%.1f秒 Whisper=%.2f秒 lang=%s text_len=%d",
                          duration_sec, t2 - t1, lang, len(text))
 
-            # --- Whisper幻覚フィルタ ---
-            # ノイズ・無音からWhisperが生成しがちな定型幻覚を除外
-            # （実接見ログで「ありがとうございました」「ご視聴〜」「場場場…」の
-            #   すり抜けを確認したため強化）
-            _HALLUCINATIONS = {
-                "thank you", "thanks",
-                "thank you for watching", "thanks for watching",
-                "please subscribe", "like and subscribe",
-                "you", "bye", "the end",
-                "so", "oh", "um", "uh", "hmm", "okay",
-                "ご視聴ありがとうございました", "チャンネル登録お願いします",
-                "ありがとうございました", "ありがとうございます",
-                "ご視聴ありがとうございます",
-                "おやすみなさい", "ではまた", "お疲れ様でした",
-            }
-            # 日本語句読点・記号も含めて剥がす（旧実装はASCII "." のみで
-            # 「〜ました。」の全角句点がすり抜けていた）
-            text_norm = text.lower().strip().strip(".。、，…!！?？ 　")
-
-            def _is_repetition(s: str) -> bool:
-                """「場場場場…」型の反復幻覚を検出（異なり文字が極端に少ない）"""
-                stripped = s.replace(" ", "").replace("　", "")
-                return len(stripped) >= 10 and len(set(stripped)) <= 2
-
+            # --- Whisper幻覚フィルタ（実装はモジュール関数 is_hallucination_text）---
             is_hallucination = (
-                len(text) <= 1
-                or text_norm in _HALLUCINATIONS
-                or _is_repetition(text)
+                is_hallucination_text(text)
                 or duration_sec < 0.3  # 0.3秒未満の音声はノイズ
             )
             if is_hallucination:

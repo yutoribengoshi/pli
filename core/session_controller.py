@@ -402,7 +402,7 @@ class SessionController:
 
     def set_stt_sensitivity(self, preset: str):
         """マイク感度プリセット切替"""
-        labels = {"high": "高感度", "normal": "標準", "low": "低感度"}
+        labels = {"ultra": "超高感度", "high": "高感度", "normal": "標準", "low": "低感度"}
         self._emit_status(f"マイク感度: {labels.get(preset, preset)}", 3000)
         if self._cb_stt_sensitivity_changed:
             self._cb_stt_sensitivity_changed(preset)
