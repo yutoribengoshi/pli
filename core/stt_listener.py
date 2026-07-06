@@ -345,10 +345,10 @@ class STTListener:
                 wf.setframerate(self._sample_rate)
                 wf.writeframes(raw_data)
 
-            # Whisper実行
-            t1 = time.time()
+            # Whisper実行（monotonic: 壁時計のNTP補正で負の時間が出るのを防ぐ）
+            t1 = time.monotonic()
             text, lang = self.stt.transcribe(tmp_path)
-            t2 = time.time()
+            t2 = time.monotonic()
             text = text.strip()
 
             # 秘匿: 認識テキスト本文はログに書かない（長さ・言語・所要時間のみ）
@@ -356,21 +356,33 @@ class STTListener:
                          duration_sec, t2 - t1, lang, len(text))
 
             # --- Whisper幻覚フィルタ ---
-            # ノイズからWhisperが生成しがちな定型幻覚を除外
+            # ノイズ・無音からWhisperが生成しがちな定型幻覚を除外
+            # （実接見ログで「ありがとうございました」「ご視聴〜」「場場場…」の
+            #   すり抜けを確認したため強化）
             _HALLUCINATIONS = {
-                "thank you", "thanks", "thank you.", "thanks.",
+                "thank you", "thanks",
                 "thank you for watching", "thanks for watching",
                 "please subscribe", "like and subscribe",
-                "you", "bye", "bye.", "the end", "the end.",
+                "you", "bye", "the end",
                 "so", "oh", "um", "uh", "hmm", "okay",
                 "ご視聴ありがとうございました", "チャンネル登録お願いします",
-                "おやすみなさい", "ではまた",
-                "...", "…",
+                "ありがとうございました", "ありがとうございます",
+                "ご視聴ありがとうございます",
+                "おやすみなさい", "ではまた", "お疲れ様でした",
             }
-            text_lower = text.lower().strip().rstrip(".")
+            # 日本語句読点・記号も含めて剥がす（旧実装はASCII "." のみで
+            # 「〜ました。」の全角句点がすり抜けていた）
+            text_norm = text.lower().strip().strip(".。、，…!！?？ 　")
+
+            def _is_repetition(s: str) -> bool:
+                """「場場場場…」型の反復幻覚を検出（異なり文字が極端に少ない）"""
+                stripped = s.replace(" ", "").replace("　", "")
+                return len(stripped) >= 10 and len(set(stripped)) <= 2
+
             is_hallucination = (
                 len(text) <= 1
-                or text_lower in _HALLUCINATIONS
+                or text_norm in _HALLUCINATIONS
+                or _is_repetition(text)
                 or duration_sec < 0.3  # 0.3秒未満の音声はノイズ
             )
             if is_hallucination:

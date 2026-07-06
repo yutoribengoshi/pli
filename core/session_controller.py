@@ -20,6 +20,41 @@ from core.recorder import Recorder, RecordMode
 logger = get_logger(__name__)
 
 
+def decide_is_attorney(text: str, lang: str, target_lang: str) -> bool:
+    """STT結果の話者（弁護人=日本語話者か）を判定する。
+
+    設計: Whisperの言語自動判定は実接見で約10%誤爆する（日本語がen/ko/es/zh等と
+    誤検出され、翻訳が逆方向に走る事故が43/386発話で発生）。日本語はかな・漢字と
+    いう固有の文字体系を持つため、**認識テキストの文字種を主signal**とし、
+    Whisperのlangは補助にのみ使う。
+
+    Args:
+        text: STT認識テキスト
+        lang: Whisperの言語判定（補助signal）
+        target_lang: セッションの相手言語（例 "en"）
+    """
+    if not text:
+        return lang == "ja"
+
+    n = len(text)
+    kana = sum(1 for c in text if "぀" <= c <= "ヿ" or "･" <= c <= "ﾟ")
+    cjk = sum(1 for c in text if "一" <= c <= "鿿")
+
+    if target_lang == "zh":
+        # 漢字は日中で共有 → 日本語固有のかなの有無で判定。
+        # かなゼロの純漢字列（稀）だけWhisper langに委ねる
+        if kana > 0:
+            return True
+        if cjk / n > 0.3:
+            return lang == "ja"
+        return False
+
+    # 相手言語が非漢字圏（en/vi/es/pt/ur/tl等）: かな+漢字の比率で判定。
+    # 日本語の実発話は助詞・送り仮名で必ずかなを含むため、この閾値で
+    # ja↔en系の取り違えはほぼ起きない
+    return (kana + cjk) / n > 0.3
+
+
 # ---------------------------------------------------------------------------
 # TranslationJob — 翻訳ジョブ定義
 # ---------------------------------------------------------------------------
@@ -393,18 +428,10 @@ class SessionController:
         elif mode == "defendant":
             is_attorney = False
         else:
-            # AUTO: Whisperの言語検出 vs ターゲット言語で判定
+            # AUTO: 文字種を主signalに判定（Whisper langの約10%誤爆対策。
+            # 実接見でja発話がen/ko/es等と誤検出→逆方向翻訳になる事故を修正）
             tgt = self.interpreter.target_lang
-            if lang == "ja":
-                is_attorney = True
-            elif lang == tgt or (tgt == "en" and lang in ("en", "english")):
-                is_attorney = False
-            else:
-                ja_chars = sum(
-                    1 for c in text
-                    if unicodedata.name(c, "").startswith(("CJK", "HIRAGANA", "KATAKANA"))
-                )
-                is_attorney = (ja_chars / max(len(text), 1)) > 0.3
+            is_attorney = decide_is_attorney(text, lang, tgt)
             # 秘匿: 認識テキスト本文はログに書かない
             logger.debug("STT自動判定 lang=%s target=%s is_attorney=%s len=%d",
                          lang, tgt, is_attorney, len(text))
