@@ -8,7 +8,7 @@ data/legal_dict.json (4,339語) の単一の真実源。UIの手動検索（ui/d
 使え」と注入する（強制置換はしない安全方式）。これにより「覚醒剤取締法」が
 "Act on Control of Psychotropic Substances" のように誤訳されるのを防ぐ。
 
-Copyright (c) 2025-2026 中野通り法律事務所 弁護士 関智之 (Tomoyuki Seki)
+Copyright (c) 2025-2026 中野通り法律事務所 弁護士 関智之（東京弁護士会所属）（東京弁護士会所属）(Tomoyuki Seki)
 All rights reserved.
 """
 import json

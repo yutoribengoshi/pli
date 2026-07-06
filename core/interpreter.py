@@ -2,7 +2,7 @@
 PLI Core Interpreter - STT + 翻訳エンジン統合パイプライン
 モデル未DL時はモックモードで動作
 
-Copyright (c) 2025-2026 中野通り法律事務所 弁護士 関智之 (Tomoyuki Seki)
+Copyright (c) 2025-2026 中野通り法律事務所 弁護士 関智之（東京弁護士会所属）（東京弁護士会所属）(Tomoyuki Seki)
 All rights reserved.
 """
 

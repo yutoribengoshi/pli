@@ -185,7 +185,7 @@ app = BUNDLE(
         'CFBundleVersion': APP_VERSION,
         'CFBundleShortVersionString': APP_VERSION,
         'NSMicrophoneUsageDescription': '接見・法廷での通訳のため、マイクで音声を認識します。音声は外部に送信されません。',
-        'NSHumanReadableCopyright': 'Copyright 2025-2026 中野通り法律事務所 弁護士 関智之 (Tomoyuki Seki). All rights reserved.',
+        'NSHumanReadableCopyright': 'Copyright 2025-2026 中野通り法律事務所 弁護士 関智之（東京弁護士会所属）（東京弁護士会所属）(Tomoyuki Seki). All rights reserved.',
         'LSMinimumSystemVersion': '12.0',
         'NSHighResolutionCapable': True,
         'LSApplicationCategoryType': 'public.app-category.productivity',

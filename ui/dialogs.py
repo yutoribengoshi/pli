@@ -2,7 +2,7 @@
 PLI - Dialog classes
 構文チェック・定型文編集・固有名詞辞書・辞書検索ダイアログ
 
-Copyright (c) 2025-2026 中野通り法律事務所 弁護士 関智之 (Tomoyuki Seki)
+Copyright (c) 2025-2026 中野通り法律事務所 弁護士 関智之（東京弁護士会所属）（東京弁護士会所属）(Tomoyuki Seki)
 All rights reserved.
 """
 

@@ -5,7 +5,7 @@ Usage:
     python scripts/benchmark_llm.py --port 8003 --label "Qwen3.5-9B-Q4_K_M" --out /tmp/bench_q35_9b.json
     python scripts/benchmark_llm.py --port 8003 --label "X" --langs en,tl  # 言語を絞る
 
-Copyright (c) 2025-2026 中野通り法律事務所 弁護士 関智之 (Tomoyuki Seki)
+Copyright (c) 2025-2026 中野通り法律事務所 弁護士 関智之（東京弁護士会所属）（東京弁護士会所属）(Tomoyuki Seki)
 """
 import argparse
 import json

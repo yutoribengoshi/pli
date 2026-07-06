@@ -2,7 +2,7 @@
 PLI TranslationPanel - 弁護人テキスト入力・翻訳制御ウィジェット
 AttorneyWindow から抽出した入力・翻訳・定型文・承認パネルを独立 QWidget 化
 
-Copyright (c) 2025-2026 中野通り法律事務所 弁護士 関智之 (Tomoyuki Seki)
+Copyright (c) 2025-2026 中野通り法律事務所 弁護士 関智之（東京弁護士会所属）（東京弁護士会所属）(Tomoyuki Seki)
 All rights reserved.
 """
 

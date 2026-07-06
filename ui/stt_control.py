@@ -2,7 +2,7 @@
 PLI STT Control Widget - 音声認識コントロール
 平成初期レトロUI — 一太郎的な業務用ソフトの佇まい
 
-Copyright (c) 2025-2026 中野通り法律事務所 弁護士 関智之 (Tomoyuki Seki)
+Copyright (c) 2025-2026 中野通り法律事務所 弁護士 関智之（東京弁護士会所属）（東京弁護士会所属）(Tomoyuki Seki)
 All rights reserved.
 
 AttorneyWindow から抽出した STT 制御ウィジェット:

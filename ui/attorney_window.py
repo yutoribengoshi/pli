@@ -2,7 +2,7 @@
 PLI Attorney Console - 弁護人コンソール画面
 平成初期レトロUI — 一太郎的な業務用ソフトの佇まい
 
-Copyright (c) 2025-2026 中野通り法律事務所 弁護士 関智之 (Tomoyuki Seki)
+Copyright (c) 2025-2026 中野通り法律事務所 弁護士 関智之（東京弁護士会所属）（東京弁護士会所属）(Tomoyuki Seki)
 All rights reserved.
 
 表示モード:
@@ -1611,7 +1611,7 @@ class AttorneyWindow(QMainWindow):
             "<p style='font-size:12px; color:#666;'>開発</p>"
             "<p style='font-size:14px; font-weight:bold; color:#1a3a6a;'>中野通り法律事務所<br>弁護士  関  智之</p><hr>"
             "<p style='font-size:10px; color:#999;'>"
-            "Copyright &copy; 2025-2026 中野通り法律事務所 弁護士 関智之<br>All rights reserved.<br><br>"
+            "Copyright &copy; 2025-2026 中野通り法律事務所 弁護士 関智之（東京弁護士会所属）<br>All rights reserved.<br><br>"
             "法律用語辞書: 法務省 JLT v18.0 + DEA DIR-022-18</p><hr>"
             "<p style='font-size:10px; color:#8a3a1a; text-align:left;'>"
             "<b>免責事項:</b> 本ソフトウェアは現状有姿（AS IS）で提供され、"
