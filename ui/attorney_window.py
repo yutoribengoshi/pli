@@ -1612,7 +1612,14 @@ class AttorneyWindow(QMainWindow):
             "<p style='font-size:14px; font-weight:bold; color:#1a3a6a;'>中野通り法律事務所<br>弁護士  関  智之</p><hr>"
             "<p style='font-size:10px; color:#999;'>"
             "Copyright &copy; 2025-2026 中野通り法律事務所 弁護士 関智之<br>All rights reserved.<br><br>"
-            "法律用語辞書: 法務省 JLT v18.0 + DEA DIR-022-18</p></div>")
+            "法律用語辞書: 法務省 JLT v18.0 + DEA DIR-022-18</p><hr>"
+            "<p style='font-size:10px; color:#8a3a1a; text-align:left;'>"
+            "<b>免責事項:</b> 本ソフトウェアは現状有姿（AS IS）で提供され、"
+            "利用は完全に利用者の自己責任です。機械翻訳には誤訳のリスクが常に存在し、"
+            "誤訳・誤動作に起因する一切の損害（依頼者への不利益・訴訟結果への影響を含む）"
+            "について開発者は責任を負いません。重要な場面では必ず人間の通訳人による"
+            "確認を併用してください。本ソフトウェアは弁護人の業務を補助する道具であり、"
+            "通訳人を代替するものではありません。</p></div>")
 
     def _show_shortcut_help(self):
         dlg = QDialog(self)
