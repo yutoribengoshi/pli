@@ -1,736 +1,857 @@
 #!/usr/bin/env python3
-"""PLI 仕様書兼取扱説明書 Word (.docx) 生成スクリプト"""
+"""PLI 仕様書兼取扱説明書 Word (.docx) 生成スクリプト（フル版）
+
+秘匿ポリシー: 実接見の会話内容・依頼者情報・録音・pli_recordファイル等は
+一切引用しない。実戦実績は「拘置所接見386発話で通訳した」等の抽象記載のみ。
+
+Copyright (c) 2025-2026 中野通り法律事務所 弁護士 関智之（東京弁護士会所属）
+"""
 
 from docx import Document
-from docx.shared import Pt, Cm, Inches, RGBColor, Emu
+from docx.shared import Pt, Cm, Inches, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT
-from docx.enum.section import WD_ORIENT
 from docx.oxml.ns import qn, nsdecls
 from docx.oxml import parse_xml
 import os
 
-# ── カラー定数 ──
+# ── カラー ──
 NAVY = RGBColor(0x1a, 0x3a, 0x6a)
 WHITE = RGBColor(0xFF, 0xFF, 0xFF)
-DGRAY = RGBColor(0x66, 0x66, 0x66)
+DGRAY = RGBColor(0x55, 0x55, 0x55)
 ACCENT = RGBColor(0x3a, 0x7a, 0xbf)
+WARN = RGBColor(0x8a, 0x3a, 0x1a)
+OK_GREEN = RGBColor(0x2a, 0x6a, 0x30)
+LIGHT_BG = "e8ecf5"
+WARN_BG = "fdeae0"
 
+
+# ── ヘルパー ──
 def set_cell_shading(cell, color_hex):
-    """セルの背景色を設定"""
-    shading_elm = parse_xml(f'<w:shd {nsdecls("w")} w:fill="{color_hex}"/>')
-    cell._tc.get_or_add_tcPr().append(shading_elm)
+    tcPr = cell._tc.get_or_add_tcPr()
+    shd = parse_xml(f'<w:shd {nsdecls("w")} w:fill="{color_hex}"/>')
+    tcPr.append(shd)
+
 
 def set_cell_border(cell, **kwargs):
-    tc = cell._tc
-    tcPr = tc.get_or_add_tcPr()
-    tcBorders = parse_xml(f'<w:tcBorders {nsdecls("w")}></w:tcBorders>')
-    for edge, val in kwargs.items():
-        element = parse_xml(
-            f'<w:{edge} {nsdecls("w")} w:val="{val.get("val", "single")}" '
-            f'w:sz="{val.get("sz", "4")}" w:space="0" '
-            f'w:color="{val.get("color", "CCCCCC")}"/>'
-        )
-        tcBorders.append(element)
+    tcPr = cell._tc.get_or_add_tcPr()
+    tcBorders = parse_xml(f'''<w:tcBorders {nsdecls("w")}>
+        <w:top w:val="single" w:sz="4" w:color="AAAAAA"/>
+        <w:left w:val="single" w:sz="4" w:color="AAAAAA"/>
+        <w:bottom w:val="single" w:sz="4" w:color="AAAAAA"/>
+        <w:right w:val="single" w:sz="4" w:color="AAAAAA"/>
+    </w:tcBorders>''')
     tcPr.append(tcBorders)
 
+
 def make_header_cell(cell, text):
-    """テーブルヘッダーセル"""
-    set_cell_shading(cell, "1a3a6a")
+    cell.text = ""
     p = cell.paragraphs[0]
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     run = p.add_run(text)
-    run.bold = True
+    run.font.size = Pt(10)
+    run.font.bold = True
     run.font.color.rgb = WHITE
-    run.font.size = Pt(9)
-    run.font.name = "Hiragino Kaku Gothic Pro"
+    set_cell_shading(cell, "1a3a6a")
+    set_cell_border(cell)
+
 
 def make_body_cell(cell, text, bold=False, center=False):
-    """テーブルボディセル"""
+    cell.text = ""
     p = cell.paragraphs[0]
     if center:
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     run = p.add_run(text)
-    run.bold = bold
-    run.font.size = Pt(9)
-    run.font.name = "Hiragino Mincho Pro"
+    run.font.size = Pt(10)
+    if bold:
+        run.font.bold = True
+    set_cell_border(cell)
+
 
 def add_styled_table(doc, headers, rows, col_widths=None):
-    """スタイル付きテーブル"""
-    table = doc.add_table(rows=1 + len(rows), cols=len(headers))
-    table.alignment = WD_TABLE_ALIGNMENT.CENTER
-
-    # ヘッダー
+    t = doc.add_table(rows=1 + len(rows), cols=len(headers))
+    t.alignment = WD_TABLE_ALIGNMENT.CENTER
     for i, h in enumerate(headers):
-        make_header_cell(table.cell(0, i), h)
-
-    # ボディ
-    for r_idx, row in enumerate(rows):
-        for c_idx, val in enumerate(row):
-            cell = table.cell(r_idx + 1, c_idx)
-            make_body_cell(cell, val)
-            # 偶数行に薄い背景
-            if r_idx % 2 == 1:
-                set_cell_shading(cell, "f8f6f0")
-
-    # 列幅
+        make_header_cell(t.rows[0].cells[i], h)
+    for ri, row in enumerate(rows, 1):
+        for ci, val in enumerate(row):
+            make_body_cell(t.rows[ri].cells[ci], val,
+                           bold=(ci == 0), center=(ci > 0 and len(val) < 12))
     if col_widths:
-        for row in table.rows:
+        for row in t.rows:
             for i, w in enumerate(col_widths):
                 row.cells[i].width = Cm(w)
+    return t
 
-    # 罫線
-    tbl = table._tbl
-    tblPr = tbl.tblPr if tbl.tblPr is not None else parse_xml(f'<w:tblPr {nsdecls("w")}/>')
-    borders = parse_xml(
-        f'<w:tblBorders {nsdecls("w")}>'
-        '  <w:top w:val="single" w:sz="4" w:space="0" w:color="CCCCCC"/>'
-        '  <w:left w:val="single" w:sz="4" w:space="0" w:color="CCCCCC"/>'
-        '  <w:bottom w:val="single" w:sz="4" w:space="0" w:color="CCCCCC"/>'
-        '  <w:right w:val="single" w:sz="4" w:space="0" w:color="CCCCCC"/>'
-        '  <w:insideH w:val="single" w:sz="4" w:space="0" w:color="CCCCCC"/>'
-        '  <w:insideV w:val="single" w:sz="4" w:space="0" w:color="CCCCCC"/>'
-        '</w:tblBorders>'
-    )
-    tblPr.append(borders)
 
-    return table
-
-def add_section_heading(doc, text):
-    """紺色帯の見出し"""
-    table = doc.add_table(rows=1, cols=1)
-    cell = table.cell(0, 0)
-    set_cell_shading(cell, "1a3a6a")
-    p = cell.paragraphs[0]
-    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+def add_h1(doc, text):
+    p = doc.add_paragraph()
+    p.paragraph_format.space_before = Pt(18)
+    p.paragraph_format.space_after = Pt(8)
     run = p.add_run(text)
-    run.bold = True
-    run.font.color.rgb = WHITE
-    run.font.size = Pt(13)
-    run.font.name = "Hiragino Kaku Gothic Pro"
-    doc.add_paragraph()  # spacer
+    run.font.size = Pt(20)
+    run.font.bold = True
+    run.font.color.rgb = NAVY
+    pPr = p._p.get_or_add_pPr()
+    pBdr = parse_xml(f'''<w:pBdr {nsdecls("w")}>
+        <w:bottom w:val="single" w:sz="12" w:color="1a3a6a"/>
+    </w:pBdr>''')
+    pPr.append(pBdr)
+
 
 def add_h2(doc, text):
     p = doc.add_paragraph()
+    p.paragraph_format.space_before = Pt(10)
+    p.paragraph_format.space_after = Pt(4)
     run = p.add_run(text)
-    run.bold = True
-    run.font.size = Pt(13)
+    run.font.size = Pt(14)
+    run.font.bold = True
     run.font.color.rgb = NAVY
-    run.font.name = "Hiragino Kaku Gothic Pro"
-    p.space_before = Pt(12)
+
 
 def add_h3(doc, text):
     p = doc.add_paragraph()
+    p.paragraph_format.space_before = Pt(6)
+    p.paragraph_format.space_after = Pt(2)
     run = p.add_run(text)
-    run.bold = True
     run.font.size = Pt(11)
+    run.font.bold = True
     run.font.color.rgb = ACCENT
-    run.font.name = "Hiragino Kaku Gothic Pro"
-    p.space_before = Pt(8)
+
 
 def add_body(doc, text):
     p = doc.add_paragraph()
-    run = p.add_run(text)
-    run.font.size = Pt(9.5)
-    run.font.name = "Hiragino Mincho Pro"
     p.paragraph_format.space_after = Pt(4)
-    return p
+    run = p.add_run(text)
+    run.font.size = Pt(10.5)
+
 
 def add_bullet(doc, text):
     p = doc.add_paragraph(style="List Bullet")
-    p.clear()
+    p.paragraph_format.space_after = Pt(1)
+    run = p.runs[0] if p.runs else p.add_run("")
     run = p.add_run(text)
-    run.font.size = Pt(9.5)
-    run.font.name = "Hiragino Mincho Pro"
-    return p
+    run.font.size = Pt(10.5)
+
 
 def add_code(doc, text):
     p = doc.add_paragraph()
+    p.paragraph_format.left_indent = Cm(0.5)
+    p.paragraph_format.space_after = Pt(4)
+    pPr = p._p.get_or_add_pPr()
+    shd = parse_xml(f'<w:shd {nsdecls("w")} w:fill="f2f4f8"/>')
+    pPr.append(shd)
     run = p.add_run(text)
-    run.font.size = Pt(8.5)
-    run.font.name = "Courier New"
-    run.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
-    p.paragraph_format.left_indent = Cm(1)
-    # 背景色
-    shd = parse_xml(f'<w:shd {nsdecls("w")} w:fill="f0ede5" w:val="clear"/>')
-    p.paragraph_format.element.get_or_add_pPr().append(shd)
-    return p
-
-def add_note(doc, text):
-    p = doc.add_paragraph()
-    run = p.add_run(text)
-    run.font.size = Pt(8.5)
+    run.font.name = "Menlo"
+    run.font.size = Pt(9)
     run.font.color.rgb = DGRAY
-    run.font.name = "Hiragino Mincho Pro"
-    p.paragraph_format.left_indent = Cm(1)
-    return p
 
 
+def add_note(doc, text, color=WARN, bg=WARN_BG):
+    p = doc.add_paragraph()
+    p.paragraph_format.left_indent = Cm(0.3)
+    p.paragraph_format.space_before = Pt(4)
+    p.paragraph_format.space_after = Pt(4)
+    pPr = p._p.get_or_add_pPr()
+    shd = parse_xml(f'<w:shd {nsdecls("w")} w:fill="{bg}"/>')
+    pPr.append(shd)
+    run = p.add_run(text)
+    run.font.size = Pt(10)
+    run.font.color.rgb = color
+
+
+def add_page_break(doc):
+    doc.add_page_break()
+
+
+# ── メイン生成 ──
 def main():
     doc = Document()
 
-    # ── ページ設定 (A4) ──
-    section = doc.sections[0]
-    section.page_width = Cm(21)
-    section.page_height = Cm(29.7)
-    section.top_margin = Cm(2)
-    section.bottom_margin = Cm(2)
-    section.left_margin = Cm(2)
-    section.right_margin = Cm(2)
+    # ページ設定（A4・余白狭め）
+    for section in doc.sections:
+        section.page_height = Cm(29.7)
+        section.page_width = Cm(21.0)
+        section.top_margin = Cm(2.0)
+        section.bottom_margin = Cm(2.0)
+        section.left_margin = Cm(2.2)
+        section.right_margin = Cm(2.2)
 
-    # ── デフォルトフォント ──
+    # 既定フォント
     style = doc.styles["Normal"]
-    style.font.name = "Hiragino Mincho Pro"
-    style.font.size = Pt(10)
+    style.font.name = "游明朝"
+    style.font.size = Pt(10.5)
+    style.element.rPr.rFonts.set(qn("w:eastAsia"), "游明朝")
 
-    # ══════════════════════════════════════════════
-    #  表紙
-    # ══════════════════════════════════════════════
+    # ================================================================
+    # 表紙
+    # ================================================================
+    for _ in range(4):
+        doc.add_paragraph()
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p.add_run("PLI")
+    run.font.size = Pt(48)
+    run.font.bold = True
+    run.font.color.rgb = NAVY
+
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p.add_run("Private Link Interpreter")
+    run.font.size = Pt(20)
+    run.font.color.rgb = NAVY
+
+    doc.add_paragraph()
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p.add_run("完全オフラインで動作する、刑事弁護人のための法律通訳AI")
+    run.font.size = Pt(13)
+    run.font.color.rgb = DGRAY
+
+    doc.add_paragraph()
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p.add_run("仕様書 兼 取扱説明書")
+    run.font.size = Pt(16)
+    run.font.color.rgb = NAVY
+    run.font.bold = True
+
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p.add_run("Version 2.0 β / 2026年7月版")
+    run.font.size = Pt(11)
+    run.font.color.rgb = DGRAY
+
+    for _ in range(6):
+        doc.add_paragraph()
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p.add_run("開発")
+    run.font.size = Pt(10)
+    run.font.color.rgb = DGRAY
+
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p.add_run("中野通り法律事務所")
+    run.font.size = Pt(14)
+    run.font.color.rgb = NAVY
+    run.font.bold = True
+
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p.add_run("弁護士 関 智之（東京弁護士会所属）")
+    run.font.size = Pt(14)
+    run.font.color.rgb = NAVY
+    run.font.bold = True
+
+    add_page_break(doc)
+
+    # ================================================================
+    # 巻頭免責事項（1枚目に明確に）
+    # ================================================================
+    add_h1(doc, "はじめに / 免責事項")
+    add_body(doc, "本ソフトウェア「PLI（Private Link Interpreter）」は、外国人刑事事件の接見・公判等における通訳問題の解消を目的として、中野通り法律事務所 弁護士 関 智之（東京弁護士会所属）が個人的に開発したソフトウェアです。")
+
+    add_h2(doc, "重要な免責事項")
+    add_note(doc, "本ソフトウェアは「現状有姿（AS IS）」で提供されます。利用は完全に利用者自身の責任で行ってください。開発者は、本ソフトウェアの利用に起因する一切の損害（誤訳・誤動作・データ消失・依頼者への不利益・量刑・判決結果への影響等）について、いかなる責任も負いません。")
+    add_body(doc, "機械翻訳には常に誤訳のリスクが存在します。重要な場面では必ず人間の通訳人による確認を併用してください。本ソフトウェアは「人間の通訳人を代替する」ものではなく、あくまで弁護人の業務を補助する道具です。")
+
+    add_h2(doc, "β版であることのご理解")
+    add_body(doc, "本ソフトウェアは現在β版です。実接見での運用検証は進めているものの、未検証言語、既知の不具合、環境依存の問題が残存しています。利用に際しては本書「9. β版の限界と既知の課題」を必ずご確認ください。")
+
+    add_h2(doc, "秘匿性についての設計原則")
+    add_body(doc, "本ソフトウェアは、依頼者の発言を一切外部に送信しません。すべての音声認識・翻訳処理は、利用者のPC本体の中で動作するローカルAI（ローカルLLM）で完結します。この設計は、弁護士法23条（守秘義務）の順守を第一とする刑事弁護実務の要請に応じたものです。")
+
+    add_page_break(doc)
+
+    # ================================================================
+    # 目次
+    # ================================================================
+    add_h1(doc, "目次")
+    toc_items = [
+        ("1", "開発の経緯"),
+        ("2", "PLIができること"),
+        ("3", "対応言語（22言語）"),
+        ("4", "システム構成と動作原理"),
+        ("5", "「ローカルLLM」とは"),
+        ("6", "誤訳予防の8つの仕組み"),
+        ("7", "翻訳精度の検証結果"),
+        ("8", "動作環境（Mac / Windows）"),
+        ("9", "β版の限界と既知の課題"),
+        ("10", "セットアップ手順"),
+        ("11", "使い方（接見での操作）"),
+        ("12", "接見室での運用のコツ"),
+        ("13", "録音・記録・エクスポート"),
+        ("14", "実戦実績と現場フィードバック反映"),
+        ("15", "ライセンスと著作権"),
+        ("16", "第三者ソフトウェアの帰属"),
+        ("17", "開発者クレジット / お問い合わせ"),
+    ]
+    for num, title in toc_items:
+        p = doc.add_paragraph()
+        p.paragraph_format.space_after = Pt(2)
+        run = p.add_run(f"  {num}.  {title}")
+        run.font.size = Pt(11)
+        run.font.color.rgb = NAVY
+
+    add_page_break(doc)
+
+    # ================================================================
+    # 1. 開発の経緯
+    # ================================================================
+    add_h1(doc, "1. 開発の経緯")
+    add_body(doc, "外国人刑事事件を弁護していると、通訳を巡って次のような問題に繰り返し直面します。")
+    for item in [
+        "「非弁通訳」が依頼者を取り込もうとしてくる",
+        "強引な通訳人が、依頼者に勝手なことを吹き込んでいる",
+        "法テラスから通訳費用の立替を命じられ、結果として弁護費用が高くつく",
+        "通訳人が法廷の柵（バー）に入れず、弁護権が事実上制限される",
+        "そもそも稀少言語の通訳人が見つからない",
+        "拘置所・接見室ではオンラインAI翻訳サービスに接続できない（電波・Wi-Fiが届かない）",
+        "たとえ接続できても、依頼者の発言を外部サーバーに送るのは守秘義務違反のおそれがある",
+    ]:
+        add_bullet(doc, item)
+    add_body(doc, "「依頼者と弁護人の間に、信頼できる通訳が常に介在する状態」を、外部の通訳人に依存せず、依頼者の発言を外部に一切送信しない形で作れないか。この問題意識から、約半年をかけて本ソフトウェアを開発しました。")
+
+    add_page_break(doc)
+
+    # ================================================================
+    # 2. PLIができること
+    # ================================================================
+    add_h1(doc, "2. PLIができること")
+    add_styled_table(
+        doc,
+        ["利用シーン", "できること"],
+        [
+            ["接見室（拘置所・警察署）", "依頼者との打ち合わせを、日本語↔相手言語でリアルタイム通訳"],
+            ["公判前整理手続", "弁護人と依頼者の意思疎通を、席に置いたMacBook 1台で通訳"],
+            ["公判廷・裁判員裁判", "弁護人席で起動し、依頼者と即時通訳。第三者を席に入れない"],
+            ["取調べ立会", "取調べ室での弁護人・依頼者間の通訳"],
+            ["書面ドラフト作成", "依頼者の陳述内容の翻訳を、後日確認できる形で記録・出力"],
+        ],
+        col_widths=[5.0, 11.0],
+    )
+    add_note(doc,
+             "すべての処理はMacBook（またはWindows PC）1台の中で完結します。Wi-Fi・モバイル回線への接続は不要であり、むしろ守秘義務の観点から接続してはいけない設計です。",
+             color=NAVY, bg=LIGHT_BG)
+
+    add_page_break(doc)
+
+    # ================================================================
+    # 3. 対応言語
+    # ================================================================
+    add_h1(doc, "3. 対応言語（22言語）")
+    add_body(doc, "外国人刑事事件・入管事件で扱う機会の多い言語を中心に、以下の22言語に対応しています。")
+    add_styled_table(
+        doc,
+        ["地域", "対応言語"],
+        [
+            ["東アジア", "英語・中国語（簡体字/繁体字）・韓国語"],
+            ["東南アジア", "ベトナム語・タガログ語・タイ語・インドネシア語・ビルマ語・クメール語"],
+            ["南アジア", "ウルドゥー語・パンジャーブ語・ヒンディー語・ベンガル語・シンハラ語"],
+            ["中東", "アラビア語・ペルシャ語・トルコ語"],
+            ["南米", "ポルトガル語・スペイン語"],
+            ["欧州", "フランス語・ドイツ語・ロシア語"],
+        ],
+        col_widths=[3.5, 12.5],
+    )
+    add_note(doc, "上記のうち、法律用語精度を個別検証済みなのは英語・中国語・ベトナム語・スペイン語・ポルトガル語・ウルドゥー語の6言語です。他の言語はライブラリが技術的に対応していますが、法律用語精度の個別検証は未了です（第9章参照）。")
+
+    add_page_break(doc)
+
+    # ================================================================
+    # 4. システム構成と動作原理
+    # ================================================================
+    add_h1(doc, "4. システム構成と動作原理")
+    add_body(doc, "PLIは、次の3段階の処理をすべてPC本体内で動作させます。")
+    add_h3(doc, "処理1: 音声認識（発話を文字に）")
+    add_body(doc, "マイクから拾った音声を、OpenAI Whisper（Apple Silicon向けにMLXで最適化されたturbo版）で文字起こしします。発話の言語は自動判別されます。さらに「法律語彙バイアス」により、同音異義語で法律用語側の漢字が優先されるよう調整済みです。")
+    add_h3(doc, "処理2: 翻訳（法律用語辞書の動的注入付き）")
+    add_body(doc, "文字起こしされた発言を、ローカルLLM（Qwen3.5-9B 標準／Qwen2.5-72B 高精度）で翻訳します。翻訳時、内蔵の法律用語辞書4,339語のうち、発話に実際に登場した用語だけを翻訳プロンプトに動的注入し、正式訳語（例：覚醒剤取締法→Stimulant Drugs Control Act）を強制します。")
+    add_h3(doc, "処理3: 逆翻訳と画面表示")
+    add_body(doc, "訳文を再度日本語に逆翻訳し、原文・訳文・逆翻訳を同時に画面表示します。弁護人が「依頼者に何が伝わったか」を日本語でその場で確認できる誤訳予防の要となる工程です。")
+
+    add_page_break(doc)
+
+    # ================================================================
+    # 5. ローカルLLMとは
+    # ================================================================
+    add_h1(doc, "5. 「ローカルLLM」とは")
+    add_body(doc, "「LLM」はLarge Language Model（大規模言語モデル）の略で、ChatGPT、Claude、Geminiなどの名前で知られているAI技術です。")
+
+    add_h2(doc, "クラウドLLMとの決定的な違い")
+    add_body(doc, "通常のChatGPT等は、入力した文章をすべてインターネット経由で外部企業のサーバー（米国等）に送信し、そこで処理してから結果を返す仕組みです。これに対しローカルLLMは、これらのAI技術を「利用者のPC本体の中」で動かす方式を指します。")
+
+    add_h2(doc, "弁護士業務でローカルLLMが重要な理由")
+    for item in [
+        "外部企業のサーバーに依頼者の発言が保存されない",
+        "海外（米国・EU等）のデータ管轄に発言が出ない",
+        "AI事業者の学習データに使われない",
+        "第三国の捜査機関が令状で取得することができない",
+        "拘置所・法廷でWi-Fiが繋がらない環境でも動作する",
+    ]:
+        add_bullet(doc, item)
+    add_note(doc, "裁判で否認している依頼者の発言が、米国捜査機関の令状でアクセス可能な状態にあるサーバーに保存されている——これは弁護士法23条の守秘義務に照らし、許容できません。ローカルLLMであれば、この問題が構造的に生じません。",
+             color=NAVY, bg=LIGHT_BG)
+
+    add_h2(doc, "PLIで使用しているモデル")
+    add_styled_table(
+        doc,
+        ["モデル", "開発元", "役割"],
+        [
+            ["Qwen3.5-9B（標準）", "Alibaba", "翻訳LLM。16GB Macで実用速度"],
+            ["Qwen2.5-72B（高精度）", "Alibaba", "翻訳LLM。64GB Mac向け高精度"],
+            ["Whisper-turbo", "OpenAI（MLX最適化はApple）", "音声認識"],
+            ["NLLB-200", "Meta", "多言語翻訳フォールバック"],
+            ["OPUS-MT", "ヘルシンキ大学", "言語ペア専用軽量翻訳"],
+        ],
+        col_widths=[5.0, 4.0, 7.0],
+    )
+
+    add_page_break(doc)
+
+    # ================================================================
+    # 6. 誤訳予防の8つの仕組み
+    # ================================================================
+    add_h1(doc, "6. 誤訳予防の8つの仕組み")
+    add_body(doc, "通訳AIで弁護人が最も恐れるべきは「気付かないうちに依頼者に誤った内容が伝わっていること」です。PLIは以下の8つの仕組みでこれを防ぎます。")
+
+    for i, (title, desc) in enumerate([
+        ("中間英語の併記表示",
+         "日本語→英語→相手言語の3段階翻訳を行い、英語段階を弁護人画面に常時表示。robberyとtheftのように、英語レベルで誤訳を弁護人が即座に検知できます。"),
+        ("逆翻訳の併記表示",
+         "相手言語への翻訳文を、もう一度日本語に戻して弁護人画面に併記。依頼者に何が伝わるかを日本語で確認できます。"),
+        ("法律用語辞書のプロンプト動的注入（4,339語）",
+         "内蔵の法律用語辞書から、発話に実際に登場した法律用語だけを翻訳プロンプトに動的注入。例：「覚醒剤取締法」→ AIが素で訳すと誤訳する所を、辞書注入により正式訳 Stimulant Drugs Control Act に固定。"),
+        ("音声認識にも法律語彙バイアス",
+         "Whisperに法律用語の語彙ヒントを常時与え、日本語音声認識の同音異義語誤りを抑制。実測で法律日本語フレーズの文字誤り率(CER)を54%削減。"),
+        ("同音異義語のワンタップ訂正",
+         "「接見↔石鹸」「勾留↔交流」等の紛らわしい同音異義語が発話に含まれると、バブルに🔄マークを表示。タップで別候補に差替→自動で再翻訳。"),
+        ("未知語のハイライト",
+         "辞書にない固有名詞・俗語・方言を画面で警告し、弁護人が確認するまで翻訳を確定させない設定が可能。"),
+        ("全履歴のローカル暗号化保存",
+         "原文・中間英語・相手言語・逆翻訳の4つをタイムスタンプ付きで保存可能。控訴審での通訳の正確性立証にも使えます。保存はPC本体のみ・暗号化。"),
+        ("複数翻訳エンジンの切替・併用",
+         "用途・言語に応じて、Qwen3.5-9B / Qwen2.5-72B / NLLB-200 / OPUS-MT を切替可能。"),
+    ], 1):
+        add_h3(doc, f"{i}. {title}")
+        add_body(doc, desc)
+
+    add_page_break(doc)
+
+    # ================================================================
+    # 7. 翻訳精度の検証結果
+    # ================================================================
+    add_h1(doc, "7. 翻訳精度の検証結果")
+    add_body(doc, "刑事弁護想定18フレーズで主要7言語をテストしました（詳細はdocs/BENCHMARK.md）。")
+    add_body(doc, "下表はQwen2.5-72B（高精度オプション）での検証値です。標準のQwen3.5-9Bは辞書注入により72Bと同等の法律用語精度を保ちつつ、GPU実測0.5秒/文で動作します。")
+
+    add_styled_table(
+        doc,
+        ["言語", "エンジン", "成功率", "平均速度", "法律用語", "総合"],
+        [
+            ["英語", "Qwen2.5-72B Q4", "18/18", "3.7秒", "◎", "実用可"],
+            ["中国語", "Qwen2.5-72B Q4", "18/18", "3.6秒", "◎", "実用可"],
+            ["ベトナム語", "Qwen2.5-72B Q4", "18/18", "3.8秒", "◎", "実用可"],
+            ["スペイン語", "Qwen2.5-72B Q4", "18/18", "4.2秒", "◎", "実用可"],
+            ["ポルトガル語", "Qwen2.5-72B Q4", "18/18", "5.3秒", "○", "実用可"],
+            ["ウルドゥー語", "Qwen2.5-72B Q4", "18/18", "7.3秒", "○", "実用可"],
+            ["タガログ語", "Qwen2.5-72B Q4", "18/18", "15.6秒", "△", "要追加対策"],
+        ],
+        col_widths=[2.8, 4.0, 1.8, 2.0, 2.0, 3.0],
+    )
+
+    add_h2(doc, "音声認識の精度検証（macOS TTS音声・法律フレーズ18本）")
+    add_styled_table(
+        doc,
+        ["構成", "平均CER", "所感"],
+        [
+            ["Whisper-turbo（プロンプトなし）", "0.091", "汎用ベースライン"],
+            ["Whisper-turbo + 法律語彙バイアス", "0.042", "同じフレーズでの誤字率54%減"],
+        ],
+        col_widths=[8.0, 2.5, 5.5],
+    )
+
+    add_h2(doc, "法律用語横断精度")
+    add_styled_table(
+        doc,
+        ["日本語", "英語", "ベトナム語", "スペイン語"],
+        [
+            ["強盗", "robbery", "cướp", "robo"],
+            ["窃盗", "theft", "trộm cắp", "hurto"],
+            ["故意", "intent", "cố ý", "dolo"],
+            ["過失", "negligence", "sơ suất", "negligencia"],
+            ["黙秘", "remain silent", "giữ im lặng", "guardar silencio"],
+            ["保釈", "bail", "tại ngoại", "libertad bajo fianza"],
+            ["弁護人", "defense counsel", "luật sư bào chữa", "abogado defensor"],
+            ["正当防衛", "self-defense", "tự vệ chính đáng", "legítima defensa"],
+        ],
+        col_widths=[3.0, 4.0, 5.0, 4.0],
+    )
+
+    add_page_break(doc)
+
+    # ================================================================
+    # 8. 動作環境
+    # ================================================================
+    add_h1(doc, "8. 動作環境（Mac / Windows）")
+
+    add_h2(doc, "macOS（Apple Silicon）")
+    add_body(doc, "PLIはApple SiliconのMac（M1/M2/M3/M4）を推奨環境として設計しています。CPUとGPUがメモリを共有する「ユニファイドメモリ」構造により、搭載メモリ容量がそのままAI処理性能に直結します。")
+    add_styled_table(
+        doc,
+        ["メモリ", "推奨構成", "速度"],
+        [
+            ["8GB", "Qwen3.5-4B + 辞書注入", "簡易接見向き"],
+            ["16GB（推奨）", "Qwen3.5-9B + 辞書注入", "GPU実測0.5秒/文"],
+            ["24GB", "Qwen3.5-9B + NLLB-3.3B併用", "公判廷向き"],
+            ["32GB", "Qwen3.6-35B-A3B（MoE）", "文脈理解強化"],
+            ["64GB（プロ）", "Qwen2.5-72B", "通訳人レベル"],
+        ],
+        col_widths=[3.0, 8.0, 5.0],
+    )
+
+    add_h2(doc, "Windows")
+    add_body(doc, "Windows版は開発対応済みですが、実機での動作検証は現状未了です。GPUなしのCPU推論のみでの動作を想定した設計になっており、Mac CPUでの実測値からWindows CPUでの推定速度を算出しています（あくまで推定値）。")
+    add_styled_table(
+        doc,
+        ["メモリ", "推奨モデル", "Windows推定速度"],
+        [
+            ["8GB", "Qwen3.5-4B", "5〜10秒/文"],
+            ["16GB", "Qwen3.5-9B", "4〜8秒/文"],
+            ["32GB", "Qwen3.6-35B-A3B（MoE）", "実測待ち"],
+        ],
+        col_widths=[3.0, 8.0, 5.0],
+    )
+
+    add_page_break(doc)
+
+    # ================================================================
+    # 9. β版の限界
+    # ================================================================
+    add_h1(doc, "9. β版の限界と既知の課題")
+    add_note(doc, "本ソフトウェアは現在β版です。以下の点を必ずご理解のうえ、利用をご検討ください。")
+
+    add_h2(doc, "動作実証済み言語")
+    add_bullet(doc, "英語・中国語・ベトナム語・スペイン語・ポルトガル語・ウルドゥー語（個別フレーズテスト18本完了）")
+    add_bullet(doc, "タガログ語（一部誤訳あり、辞書補強推奨）")
+
+    add_h2(doc, "動作未検証の言語")
+    add_body(doc, "以下の言語は、翻訳ライブラリ（NLLB-200・Qwen2.5）が技術的にはサポートしているものの、法律用語精度の個別検証が未了です。これらの言語で重要な刑事弁護に利用される場合は、必ず人間の通訳人による確認を併用してください。")
+    add_bullet(doc, "韓国語・タイ語・インドネシア語・ビルマ語・クメール語")
+    add_bullet(doc, "パンジャーブ語・ヒンディー語・ベンガル語・シンハラ語")
+    add_bullet(doc, "アラビア語・ペルシャ語・トルコ語")
+    add_bullet(doc, "フランス語・ドイツ語・ロシア語")
+
+    add_h2(doc, "動作環境の実証状況")
+    add_bullet(doc, "macOS（Apple Silicon）: 実際の拘置所接見での通訳運用実績あり（2026年7月）")
+    add_bullet(doc, "Windows: コード対応済・CPU推論の推定値算出済だが、実機検証は未了")
+    add_bullet(doc, "Linux: 未対応")
+
+    add_h2(doc, "既知の不具合・制約")
+    add_bullet(doc, "タガログ語で長文翻訳時、LLMが解説文を混入することがある")
+    add_bullet(doc, "一部言語で逆翻訳に意訳のブレが生じる")
+    add_bullet(doc, "ガラス壁の接見室では、物理的なマイク配置が音声認識精度を左右する（通話孔にマイクを寄せる／外付けマイク推奨）")
+    add_bullet(doc, "インストールに一定の技術知識が必要（Python環境構築）")
+    add_bullet(doc, "配布バイナリ（.dmg）は現時点で未提供")
+
+    add_h2(doc, "今後の改善予定")
+    add_bullet(doc, "タガログ語法律用語辞書の手動補強")
+    add_bullet(doc, "マイクデバイス選択UI（外付けマイク運用の簡易化）")
+    add_bullet(doc, "macOS用 .dmg 配布パッケージの整備")
+    add_bullet(doc, "Windows版の実機検証と最適化")
+    add_bullet(doc, "セットアップ動画・マニュアルの整備")
+
+    add_page_break(doc)
+
+    # ================================================================
+    # 10. セットアップ
+    # ================================================================
+    add_h1(doc, "10. セットアップ手順")
+
+    add_h2(doc, "macOS")
+    add_body(doc, "以下はターミナルからのセットアップ手順です。")
+    add_code(doc,
+             "# 1. リポジトリ取得\n"
+             "git clone https://github.com/yutoribengoshi/pli.git\n"
+             "cd pli\n\n"
+             "# 2. Python環境（pyenv推奨）\n"
+             "pyenv install 3.12.2\n"
+             "pyenv local 3.12.2\n\n"
+             "# 3. 依存パッケージ\n"
+             "pip install -r requirements.txt\n\n"
+             "# 4. llama.cpp（LLM推論エンジン）\n"
+             "brew install llama.cpp\n\n"
+             "# 5. モデル配置（例: Qwen3.5-9B）\n"
+             "mkdir -p ~/models\n"
+             "# HuggingFaceからQwen3.5-9B-Q4_K_M.ggufをダウンロードして配置\n\n"
+             "# 6. 起動\n"
+             "./scripts/pli-start.sh")
+
+    add_h2(doc, "Windows")
+    add_body(doc, "Windowsは実機検証が未完了のため、動作保証はありません。Python 3.12・llama.cpp・requirements-windows.txt を用意する必要があります。詳細はリポジトリのdocs/windows_setup.mdを参照してください。")
+
+    add_page_break(doc)
+
+    # ================================================================
+    # 11. 使い方
+    # ================================================================
+    add_h1(doc, "11. 使い方（接見での操作）")
+
+    add_h2(doc, "起動")
+    add_code(doc, "cd ~/dev/pli\n./scripts/pli-start.sh          # 標準（Qwen3.5-9B）\n./scripts/pli-start.sh quality  # 高精度（Qwen2.5-72B・要64GB）\n./scripts/pli-start.sh stop     # 停止")
+    add_body(doc, "初回起動時にmacOSからマイク・アクセシビリティのアクセス許可を求められます。「許可」を選択してください。")
+
+    add_h2(doc, "画面構成")
+    add_bullet(doc, "上部メニュー: セッション / 表示 / 音声認識 / 録音 / ヘルプ")
+    add_bullet(doc, "会話ログ: 弁護人発話（青バー・上）／相手発話（緑バー・下）")
+    add_bullet(doc, "各バブル: 原文・中間英語・訳文・逆翻訳を4行併記")
+    add_bullet(doc, "下部入力欄: 手入力での翻訳送信も可")
+
+    add_h2(doc, "キーボードショートカット")
+    add_styled_table(
+        doc,
+        ["キー", "動作"],
+        [
+            ["Enter", "入力した文章を送信"],
+            ["Space", "マイクON/OFF（入力欄以外にフォーカスがあるとき）"],
+            ["⌘5", "マイクON/OFF"],
+            ["⌘6", "話者自動判定"],
+            ["⌘7", "弁護人として入力（自分の日本語を確実に日本語→英語）"],
+            ["⌘8", "相手として入力（依頼者の発言を確実に英語→日本語）"],
+            ["⌘1", "画面を隠す（ハイドモード）"],
+            ["⌘2", "緊急消去（画面隠し＋会話ログ消去）"],
+            ["⌘3", "相手画面を別モニタに切替"],
+            ["⌘/", "ショートカット一覧を表示"],
+        ],
+        col_widths=[3.0, 13.0],
+    )
+
+    add_h2(doc, "接見中に迷ったら")
+    add_bullet(doc, "翻訳の向きが逆になる場合: ⌘7（弁護人）または ⌘8（相手）で話者を固定")
+    add_bullet(doc, "相手の声が拾えない: メニュー「音声認識→マイク感度→超高感度」を選択")
+    add_bullet(doc, "誤認識が起きた: 会話バブルの🔄マークをタップして候補から差替")
+    add_bullet(doc, "画面を見せたくない状況: ⌘1で即時ハイド、⌘2で即時消去")
+
+    add_page_break(doc)
+
+    # ================================================================
+    # 12. 接見室での運用のコツ
+    # ================================================================
+    add_h1(doc, "12. 接見室での運用のコツ")
+
+    add_h2(doc, "マイクの物理配置が最重要")
+    add_body(doc, "接見室は通常、アクリル板やガラス壁で仕切られており、相手の声は通話孔（小さな穴やメッシュ部分）を通ってきます。この物理特性を無視して感度だけ上げても限界があります。")
+    add_bullet(doc, "MacBookのマイク（キーボード上部・ヒンジ寄り）を、通話孔に寄せる")
+    add_bullet(doc, "相手に「通話孔に向かって話してください」と一言伝える")
+    add_bullet(doc, "余裕があればUSBグースネックマイク（千円台〜）を1本用意し、通話孔にテープで固定するのが劇的に効く")
+
+    add_h2(doc, "感度プリセットの使い分け")
+    add_styled_table(
+        doc,
+        ["プリセット", "用途"],
+        [
+            ["超高感度", "ガラス壁越し・小声・アクリル板越し"],
+            ["高感度", "小声の相手・静かな接見室"],
+            ["標準", "通常の対面会話"],
+            ["低感度", "ノイズが多い環境"],
+        ],
+        col_widths=[4.0, 12.0],
+    )
+
+    add_h2(doc, "話者モードの積極的な使い分け")
+    add_body(doc, "話者の自動判定は、実接見データによる文字種主導ロジックに更新済みですが、100%正確とは限りません。重要な打ち合わせでは⌘7（弁護人固定）と⌘8（相手固定）を積極的に使い分けることを推奨します。")
+
+    add_h2(doc, "ネット環境")
+    add_body(doc, "PLIはインターネット接続を必要としません。接見室ではWi-Fiがなくても、モバイル通信をオフにしていても、完全に動作します。むしろ守秘義務の観点から、接続してはいけない設計です。")
+
+    add_page_break(doc)
+
+    # ================================================================
+    # 13. 録音・記録・エクスポート
+    # ================================================================
+    add_h1(doc, "13. 録音・記録・エクスポート")
+
+    add_h2(doc, "録音モード")
+    add_styled_table(
+        doc,
+        ["モード", "動作"],
+        [
+            ["OFF", "録音しない"],
+            ["VOLATILE（揮発）", "RAM上に保持。ハイド／緊急消去でゼロ埋め即消去"],
+            ["SAVE", "~/pli-recordings/ にWAV保存"],
+        ],
+        col_widths=[3.5, 12.5],
+    )
+
+    add_h2(doc, "会話ログの保存")
+    add_bullet(doc, "メニュー「セッション→記録を保存 (JSON)」: 構造化データ。原文・訳文・話者・タイムスタンプ")
+    add_bullet(doc, "メニュー「セッション→記録をエクスポート (テキスト)」: 読みやすいテキスト形式")
+    add_bullet(doc, "会話はメモリ上のみ（守秘のため自動保存しない設計）。アプリを閉じる前に保存操作が必要")
+
+    add_h2(doc, "動作ログ（技術ログ）")
+    add_body(doc, "~/Library/Logs/PLI/pli.log に、STT秒数・翻訳秒数・言語判定結果等が記録されます。発話本文はマスキング（長さ・言語コード・件数のみ記録）されるため、秘匿義務違反にはなりません。")
+
+    add_h2(doc, "証拠化への活用")
+    add_body(doc, "JSON形式の会話ログには、原文・中間英語・相手言語・逆翻訳の4つがタイムスタンプ付きで記録されるため、控訴審での通訳正確性の立証や、後日の別通訳人による検証にも活用できます。")
+
+    add_page_break(doc)
+
+    # ================================================================
+    # 14. 実戦実績（秘匿順守：数値のみ）
+    # ================================================================
+    add_h1(doc, "14. 実戦実績と現場フィードバック反映")
+    add_note(doc, "本章では、特定案件の内容・依頼者の発言・具体的な会話には一切触れません。開発者自身が担当した実接見で得た定量情報（総発話数）と、それに基づき実装した修正のみを記載します。")
+
+    add_h2(doc, "運用実績（数値のみ）")
+    add_bullet(doc, "2026年7月時点で、開発者自身が担当する外国人刑事事件の実接見において、日本語↔英語の通訳運用実績を蓄積")
+    add_bullet(doc, "1回の接見で総発話数386件を通訳した実運用例あり")
+    add_bullet(doc, "同接見の定量データ（発話数・言語判定分布・処理時間分布）を用いた事後監査を実施")
+
+    add_h2(doc, "現場運用から発見・修正した問題（2026年7月）")
+
+    add_h3(doc, "問題1: 話者自動判定の誤爆")
+    add_body(doc, "Whisperの言語自動判定に依拠していたため、日本語発話が英語・韓国語・スペイン語等と誤検出されると翻訳の向きが逆転する事故が発生（発生率約12%）。")
+    add_body(doc, "修正: 判定ロジックを文字種主導に変更（かな・漢字の比率で判定）。同接見の実データで再生検証したところ、話者取り違えは0件に減少。")
+
+    add_h3(doc, "問題2: Whisper幻覚のすり抜け")
+    add_body(doc, "無音時にWhisperが「ありがとうございました」等の定型幻覚を生成し、フィルタをすり抜けて会話ログに混入。原因は全角句点の処理漏れ。")
+    add_body(doc, "修正: 幻覚フィルタを日本語句読点に対応。「スライドスライドスライド…」型の反復幻覚検出も追加。")
+
+    add_h3(doc, "問題3: ガラス壁越しの小声を拾えない")
+    add_body(doc, "VAD閾値の下限が一律200固定で、静かな接見室でガラス越しの小声（エネルギー100〜180程度）が下限に弾かれ、発話検出すら始まらなかった。")
+    add_body(doc, "修正: 下限値を感度プリセット連動化。「超高感度」プリセット（下限80）を新設。")
+
+    add_h3(doc, "問題4: 過去ログ閲覧中の強制スクロール")
+    add_body(doc, "新しい発話が来るたびに画面が最下部に強制スクロールされ、過去ログを読めなかった。")
+    add_body(doc, "修正: チャットアプリ標準の「stick to bottom」挙動に変更。最下部にいる時のみ自動追従。")
+
+    add_h3(doc, "問題5: サーバー切断時のクラッシュ")
+    add_body(doc, "翻訳サーバー（llama-server）が接見中に落ちた場合、翻訳スレッドが例外未捕捉で墜落する構造だった。")
+    add_body(doc, "修正: URLError等を捕捉し、日本語メッセージ「翻訳サーバーに接続できません」に変換して画面通知。")
+
+    add_page_break(doc)
+
+    # ================================================================
+    # 15. ライセンス
+    # ================================================================
+    add_h1(doc, "15. ライセンスと著作権")
+
+    add_h2(doc, "本ソフトウェアの利用許諾")
+    add_bullet(doc, "刑事弁護目的での利用: 完全無償（ライセンス料不要）")
+    add_bullet(doc, "個人弁護士・法律事務所での業務利用: 可")
+    add_bullet(doc, "国選弁護・私選弁護・接見・公判・取調べ立会: 可")
+    add_bullet(doc, "改変・再配布: 可（ただし商用販売は要相談）")
+
+    add_h2(doc, "開発者クレジット保持義務")
+    add_body(doc, "本ソフトウェアの開発者クレジット「中野通り法律事務所 弁護士 関 智之（東京弁護士会所属）」を削除・改変することを禁じます。")
+
+    add_h2(doc, "無保証・自己責任")
+    add_note(doc, "本ソフトウェアは無保証で提供されます。利用は完全に利用者の自己責任であり、明示・黙示を問わず、商品性、特定目的への適合性、第三者の権利非侵害を含むいかなる保証も行いません。開発者は、本ソフトウェアの利用または利用不能から生じる一切の直接・間接・付随的・特別・派生的損害について責任を負いません。")
+    add_body(doc, "特に、本ソフトウェアによる翻訳結果の正確性については保証されません。誤訳に起因して発生した依頼者への不利益、訴訟結果への影響、その他の法的不利益について、開発者は一切の責任を負わないものとします。")
+
+    add_page_break(doc)
+
+    # ================================================================
+    # 16. 第三者ソフトウェア
+    # ================================================================
+    add_h1(doc, "16. 第三者ソフトウェアの帰属")
+    add_body(doc, "本ソフトウェアは、以下のオープンソースソフトウェア・公開データを利用しています。各々の著作権・ライセンスに従ってご利用ください。詳細はリポジトリのNOTICE.mdをご参照ください。")
+    add_styled_table(
+        doc,
+        ["カテゴリ", "コンポーネント", "ライセンス"],
+        [
+            ["UI", "PySide6", "LGPL v3"],
+            ["音声認識", "OpenAI Whisper / mlx-whisper / faster-whisper", "MIT"],
+            ["翻訳", "NLLB-200 (Meta)", "CC-BY-NC 4.0"],
+            ["翻訳", "OPUS-MT (Helsinki-NLP)", "CC-BY 4.0"],
+            ["LLM", "Qwen2.5 / Qwen3.5 / Qwen3.6 (Alibaba)", "Apache 2.0"],
+            ["LLM実行", "llama.cpp / ggml (Georgi Gerganov)", "MIT"],
+            ["ライブラリ", "transformers (HuggingFace)", "Apache 2.0"],
+            ["ライブラリ", "ctranslate2 (OpenNMT)", "MIT"],
+            ["ライブラリ", "sentencepiece (Google)", "Apache 2.0"],
+            ["音声入力", "sounddevice / PyAudio", "MIT"],
+        ],
+        col_widths=[3.0, 8.0, 5.0],
+    )
+    add_note(doc, "重要: NLLB-200はCC-BY-NC（非商用）ライセンスのため、商用利用時にはMeta社への確認が必要です。")
+
+    add_h2(doc, "内蔵法律用語辞書の出典")
+    add_bullet(doc, "法務省 日本法令翻訳辞書 (JLT) v18.0 — 約3,769語")
+    add_bullet(doc, "DEA Intelligence Report DIR-022-18（薬物スラング） — 約81語・パブリックドメイン")
+    add_bullet(doc, "NIDA（NIH）薬物用語 — パブリックドメイン")
+    add_bullet(doc, "関 智之 弁護士（東京弁護士会所属）による手動追加 — 約570語")
+
+    add_page_break(doc)
+
+    # ================================================================
+    # 17. クレジット・お問い合わせ
+    # ================================================================
+    add_h1(doc, "17. 開発者クレジット / お問い合わせ")
+    for _ in range(3):
+        doc.add_paragraph()
+
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p.add_run("開発")
+    run.font.size = Pt(11)
+    run.font.color.rgb = DGRAY
+
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p.add_run("中野通り法律事務所")
+    run.font.size = Pt(18)
+    run.font.bold = True
+    run.font.color.rgb = NAVY
+
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p.add_run("弁護士 関 智之（東京弁護士会所属）")
+    run.font.size = Pt(16)
+    run.font.bold = True
+    run.font.color.rgb = NAVY
+
+    doc.add_paragraph()
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p.add_run("GitHub: https://github.com/yutoribengoshi/pli")
+    run.font.size = Pt(11)
+    run.font.color.rgb = ACCENT
+
     for _ in range(4):
         doc.add_paragraph()
 
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = p.add_run("PLI - Private Link Interpreter")
-    run.bold = True
-    run.font.size = Pt(24)
-    run.font.color.rgb = NAVY
-    run.font.name = "Hiragino Kaku Gothic Pro"
+    run = p.add_run("© 2025-2026 中野通り法律事務所 弁護士 関 智之（東京弁護士会所属）")
+    run.font.size = Pt(9)
+    run.font.color.rgb = DGRAY
 
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = p.add_run("秘匿通訳支援システム")
-    run.font.size = Pt(12)
+    run = p.add_run("All rights reserved.")
+    run.font.size = Pt(9)
     run.font.color.rgb = DGRAY
-
-    doc.add_paragraph()  # spacer
-
-    # 水平線
-    p = doc.add_paragraph()
-    pPr = p._p.get_or_add_pPr()
-    pBdr = parse_xml(
-        f'<w:pBdr {nsdecls("w")}>'
-        '  <w:bottom w:val="single" w:sz="6" w:space="1" w:color="CCCCCC"/>'
-        '</w:pBdr>'
-    )
-    pPr.append(pBdr)
-
-    doc.add_paragraph()
 
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = p.add_run("仕様書 兼 取扱説明書")
-    run.bold = True
-    run.font.size = Pt(14)
-    run.font.color.rgb = NAVY
-
-    for _ in range(3):
-        doc.add_paragraph()
-
-    # 表紙の情報テーブル
-    info = [
-        ("バージョン", "2.0.0"),
-        ("対応OS", "macOS 12+ (Apple Silicon)"),
-        ("開発者", "関 智幸 (Tomoyuki Seki)"),
-        ("作成日", "2026年3月14日"),
-        ("Bundle ID", "com.seki.pli"),
-    ]
-    t = doc.add_table(rows=len(info), cols=2)
-    t.alignment = WD_TABLE_ALIGNMENT.CENTER
-    for i, (k, v) in enumerate(info):
-        c0, c1 = t.cell(i, 0), t.cell(i, 1)
-        set_cell_shading(c0, "f0ede5")
-        make_body_cell(c0, k, bold=True, center=True)
-        make_body_cell(c1, v)
-        c0.width = Cm(4)
-        c1.width = Cm(8)
-    # テーブル罫線
-    tbl = t._tbl
-    tblPr = tbl.tblPr if tbl.tblPr is not None else parse_xml(f'<w:tblPr {nsdecls("w")}/>')
-    borders = parse_xml(
-        f'<w:tblBorders {nsdecls("w")}>'
-        '  <w:top w:val="single" w:sz="4" w:space="0" w:color="CCCCCC"/>'
-        '  <w:left w:val="single" w:sz="4" w:space="0" w:color="CCCCCC"/>'
-        '  <w:bottom w:val="single" w:sz="4" w:space="0" w:color="CCCCCC"/>'
-        '  <w:right w:val="single" w:sz="4" w:space="0" w:color="CCCCCC"/>'
-        '  <w:insideH w:val="single" w:sz="4" w:space="0" w:color="CCCCCC"/>'
-        '  <w:insideV w:val="single" w:sz="4" w:space="0" w:color="CCCCCC"/>'
-        '</w:tblBorders>'
-    )
-    tblPr.append(borders)
-
-    doc.add_page_break()
-
-    # ══════════════════════════════════════════════
-    #  目次
-    # ══════════════════════════════════════════════
-    p = doc.add_paragraph()
-    run = p.add_run("目次")
-    run.bold = True
-    run.font.size = Pt(16)
-    run.font.color.rgb = NAVY
-    run.font.name = "Hiragino Kaku Gothic Pro"
-    p.space_after = Pt(12)
-
-    toc_items = [
-        (False, "1.  概要"),
-        (False, "2.  システム要件"),
-        (False, "3.  インストールと起動"),
-        (False, "4.  画面構成"),
-        (True,  "  4.1  弁護人ウィンドウ（メインコンソール）"),
-        (True,  "  4.2  被疑者ウィンドウ（表示用）"),
-        (False, "5.  翻訳エンジン"),
-        (True,  "  5.1  Hybrid（OPUS-MT + NLLB）"),
-        (True,  "  5.2  NLLB単体"),
-        (True,  "  5.3  LLM（llama.cpp）"),
-        (False, "6.  音声認識（STT）"),
-        (False, "7.  定型文テンプレート"),
-        (False, "8.  固有名詞辞書（グロッサリー）"),
-        (False, "9.  辞書検索"),
-        (False, "10. セッション管理・エクスポート"),
-        (False, "11. 秘匿モード（Hide / Panic）"),
-        (False, "12. キーボードショートカット"),
-        (False, "13. 設定項目一覧"),
-        (False, "14. 対応言語一覧"),
-        (False, "15. ファイル構成"),
-        (False, "16. トラブルシューティング"),
-    ]
-    for is_sub, text in toc_items:
-        p = doc.add_paragraph()
-        run = p.add_run(text)
-        if is_sub:
-            run.font.size = Pt(9)
-            run.font.color.rgb = RGBColor(0x44, 0x44, 0x44)
-            p.paragraph_format.left_indent = Cm(1.2)
-        else:
-            run.font.size = Pt(10)
-            run.font.color.rgb = NAVY
-            run.bold = True
-            p.paragraph_format.left_indent = Cm(0.5)
-        p.paragraph_format.space_after = Pt(2)
-        p.paragraph_format.space_before = Pt(2)
-
-    doc.add_page_break()
-
-    # ══════════════════════════════════════════════
-    #  1. 概要
-    # ══════════════════════════════════════════════
-    add_section_heading(doc, "1. 概要")
-    add_body(doc,
-        "PLI（Private Link Interpreter）は、弁護人と外国人被疑者の接見時に使用する"
-        "リアルタイム通訳支援アプリケーションです。"
-    )
-    add_body(doc,
-        "弁護人が日本語で話す／入力すると、自動的に相手方の言語に翻訳して被疑者画面に表示します。"
-        "逆に被疑者が外国語で話した内容は日本語に翻訳して弁護人画面に表示します。"
-    )
-    add_h3(doc, "主な特徴")
-    for f in [
-        "Apple Silicon GPU 加速の音声認識（mlx-whisper）",
-        "複数翻訳エンジン対応（OPUS-MT / NLLB / LLM）",
-        "40以上の言語に対応",
-        "固有名詞辞書によるカスタマイズ可能な翻訳",
-        "法律分野に特化した定型文テンプレート",
-        "秘匿モード（Hide）とパニックボタン",
-        "会話ログの保存・エクスポート",
-        "完全オフライン動作（モデルダウンロード後）",
-    ]:
-        add_bullet(doc, f)
-
-    # ══════════════════════════════════════════════
-    #  2. システム要件
-    # ══════════════════════════════════════════════
-    add_section_heading(doc, "2. システム要件")
-    add_styled_table(doc, ["項目", "要件"], [
-        ["OS", "macOS 12 (Monterey) 以上"],
-        ["CPU", "Apple Silicon (M1/M2/M3/M4)"],
-        ["メモリ", "8GB 以上（推奨16GB以上）"],
-        ["ストレージ", "約3GB（アプリ＋翻訳モデル）"],
-        ["Python", "3.10 以上（開発モード時）"],
-        ["マイク", "内蔵マイクまたは外付けマイク"],
-    ], [4, 13])
-    add_note(doc, "※ LLMエンジン使用時は追加で4〜64GBのメモリが必要です。")
-
-    # ══════════════════════════════════════════════
-    #  3. インストールと起動
-    # ══════════════════════════════════════════════
-    add_section_heading(doc, "3. インストールと起動")
-
-    add_h3(doc, "3.1 アプリ版（.app）で起動")
-    add_body(doc, "dist/PLI.app をFinderでダブルクリックするか、ターミナルから以下を実行します。")
-    add_code(doc, "open dist/PLI.app")
-    add_note(doc, "※ 初回起動時に「開発元不明」警告が表示されます。右クリック →「開く」で許可してください。")
-
-    add_h3(doc, "3.2 開発モードで起動")
-    add_code(doc, "python main.py            # モックモード（テスト用）")
-    add_code(doc, "python main.py --real      # 実モデル使用")
-
-    add_h3(doc, "3.3 起動オプション")
-    add_styled_table(doc, ["オプション", "説明"], [
-        ["--real", "実モデルを使用（デフォルトはモック）"],
-        ["--display MODE", "表示モード: auto / switch / unified / dual"],
-        ["--engine ENGINE", "翻訳エンジン: auto / llm / nllb / hybrid"],
-        ["--model PATH", "LLMモデルファイルのパスを指定"],
-        ["--n-ctx N", "LLMコンテキスト長を指定"],
-    ], [4, 13])
-
-    add_h3(doc, "3.4 再ビルド（ソース変更後）")
-    add_body(doc, "ソースコードを変更した場合、.appに反映するには再ビルドが必要です。")
-    add_code(doc, "pyinstaller PLI.spec")
-    add_note(doc, "※ python main.py で直接起動する場合はビルド不要です。")
-
-    doc.add_page_break()
-
-    # ══════════════════════════════════════════════
-    #  4. 画面構成
-    # ══════════════════════════════════════════════
-    add_section_heading(doc, "4. 画面構成")
-
-    add_h2(doc, "4.1 弁護人ウィンドウ（メインコンソール）")
-    add_body(doc,
-        "弁護人が操作するメインウィンドウです。会話ログの表示、テキスト入力、"
-        "音声認識の制御、各種設定を行います。"
-    )
-
-    add_h3(doc, "画面レイアウト")
-    add_styled_table(doc, ["領域", "内容"], [
-        ["メニューバー", "言語(L) / 表示(V) / セッション(S) / 録音(R) / 音声認識(M) / テスト(T) / 設定(O) / ヘルプ(H)"],
-        ["ツールバー", "モードインジケーター、読込状態、対象言語表示"],
-        ["会話ログ", "吹き出し形式の会話履歴（弁護人=紺色、被疑者=緑色）"],
-        ["承認パネル", "被疑者発言の確認ボックス（OK / やり直し / 編集ボタン）"],
-        ["入力エリア", "定型文ボタン / 辞書ボタン / テキスト入力欄 / 送信ボタン"],
-        ["ステータスバー", "セッション番号、録音サイズ、STTモード表示"],
-    ], [3, 14])
-
-    add_h3(doc, "表示モード")
-    add_styled_table(doc, ["モード", "説明"], [
-        ["switch", "フルスクリーン切替（弁護人画面 / 被疑者画面をF3で切替）"],
-        ["unified", "左右分割（左に弁護人コンソール、右に被疑者パネル）"],
-        ["split", "スプリッター分割（弁護人・被疑者を自由にリサイズ）"],
-    ], [3, 14])
-
-    add_h3(doc, "会話バブルの操作")
-    add_styled_table(doc, ["操作", "内容"], [
-        ["右クリック", "コピーメニュー（原文+訳文 / 原文のみ / 訳文のみ）"],
-        ["修正ボタン", "弁護人発言の翻訳を手動修正"],
-        ["取消ボタン", "発言の翻訳を取り消し"],
-        ["編集ボタン", "被疑者発言の翻訳を手動修正"],
-    ], [3, 14])
-
-    add_h2(doc, "4.2 被疑者ウィンドウ（表示用）")
-    add_body(doc,
-        "被疑者に見せる表示専用ウィンドウです。タイプライター効果で翻訳結果を表示します。"
-        "操作ボタンはなく、表示のみの画面です。"
-    )
-    add_styled_table(doc, ["要素", "説明"], [
-        ["メッセージ表示", "色分けされた吹き出し（弁護人発言=紺、被疑者発言=緑）"],
-        ["タイプライター効果", "弁護人の翻訳が一文字ずつ表示される演出"],
-        ["ステータスバナー", "多言語対応の状態メッセージ（確認中/確定/修正中 等）"],
-        ["自動スクロール", "新しいメッセージに自動追従"],
-    ], [4, 13])
-
-    doc.add_page_break()
-
-    # ══════════════════════════════════════════════
-    #  5. 翻訳エンジン
-    # ══════════════════════════════════════════════
-    add_section_heading(doc, "5. 翻訳エンジン")
-    add_body(doc, "PLIは3種類の翻訳エンジンに対応しています。設定メニューから切り替え可能です。")
-
-    add_h2(doc, "5.1 Hybrid（OPUS-MT + NLLB）【推奨】")
-    add_body(doc,
-        "OPUS-MTモデルを主翻訳エンジンとして使用し、"
-        "対応していない言語ペアではNLLBにフォールバックします。最も高精度な翻訳が可能です。"
-    )
-    add_body(doc, "翻訳フロー: 日本語 → (OPUS-MT) → 英語 → (OPUS-MT) → 対象言語")
-    add_note(doc, "※ 英語を中間言語（ピボット）として使用する2段階翻訳方式です。")
-
-    add_h2(doc, "5.2 NLLB 単体")
-    add_body(doc,
-        "Meta社のNLLB-200モデルをCTranslate2で最適化して使用します。"
-        "軽量でメモリ消費が少なく、CPU環境でも動作します。"
-    )
-
-    add_h2(doc, "5.3 LLM（llama.cpp）")
-    add_body(doc,
-        "大規模言語モデル（Qwen2.5等）を使用した翻訳です。"
-        "構文チェック機能が利用可能ですが、大量のメモリを必要とします。"
-    )
-    add_styled_table(doc, ["モデルサイズ", "必要メモリ", "特徴"], [
-        ["7B (Q4_K_M)", "約8GB", "基本的な翻訳"],
-        ["14B (Q4_K_M)", "約12GB", "高品質な翻訳"],
-        ["32B (Q4_K_M)", "約24GB", "専門分野対応"],
-        ["72B (Q3_K_M)", "約40GB", "最高品質"],
-    ], [4, 3, 10])
-
-    # ══════════════════════════════════════════════
-    #  6. 音声認識
-    # ══════════════════════════════════════════════
-    add_section_heading(doc, "6. 音声認識（STT）")
-    add_body(doc,
-        "Apple Silicon GPU加速のmlx-whisperを使用したリアルタイム音声認識です。"
-        "マイクから取得した音声を自動でテキストに変換します。"
-    )
-
-    add_h3(doc, "操作方法")
-    add_styled_table(doc, ["操作", "説明"], [
-        ["Space / メニュー", "STTの開始・停止を切替"],
-        ["Command+6", "自動言語検出モード"],
-        ["Command+7", "弁護人入力モード（日本語固定）"],
-        ["Command+8", "被疑者入力モード（外国語固定）"],
-    ], [4, 13])
-
-    add_h3(doc, "感度設定")
-    add_styled_table(doc, ["レベル", "説明"], [
-        ["high (1.3x)", "小さな声も検出（静かな環境向け）"],
-        ["normal (1.8x)", "標準（推奨）"],
-        ["low (2.5x)", "周囲の騒音が大きい環境向け"],
-    ], [4, 13])
-
-    add_h3(doc, "テンポ設定")
-    add_styled_table(doc, ["レベル", "説明"], [
-        ["slow", "無音判定 1.2秒 / 最小発話 0.5秒（ゆっくり話す人向け）"],
-        ["normal", "無音判定 0.8秒 / 最小発話 0.3秒（標準）"],
-        ["fast", "無音判定 0.5秒 / 最小発話 0.15秒（早口の人向け）"],
-    ], [3, 14])
-    add_note(doc, "※ STT動作中は入力欄の背景が黄色に変わります。")
-
-    doc.add_page_break()
-
-    # ══════════════════════════════════════════════
-    #  7. 定型文テンプレート
-    # ══════════════════════════════════════════════
-    add_section_heading(doc, "7. 定型文テンプレート")
-    add_body(doc,
-        "入力エリアの「定型文」ボタンから、法律分野で頻出する定型文を選択して"
-        "ワンクリックで翻訳・送信できます。"
-    )
-
-    add_h3(doc, "組込みカテゴリ")
-    add_styled_table(doc, ["カテゴリ", "含まれるフレーズ"], [
-        ["権利告知", "黙秘権の告知 / 弁護人選任権 / 供述の自由 / 接見交通権"],
-        ["手続説明", "勾留の流れ / 保釈の説明 / 起訴・不起訴 / 裁判の流れ / 取調べの注意"],
-        ["接見時の定型句", "挨拶 / 体調確認 / 次回面会 / 家族への連絡 / 終了の挨拶"],
-    ], [4, 13])
-
-    add_h3(doc, "カスタマイズ")
-    add_body(doc, "設定メニュー →「定型文編集」から、カテゴリの追加・削除、フレーズの編集が可能です。")
-    add_body(doc,
-        "また、~/pli-models/定型文.docx をWordで直接編集することもできます。"
-        "見出し1がカテゴリ名、2列の表（ラベル｜本文）がフレーズとして読み込まれます。"
-    )
-    add_note(doc, "読み込み優先順: ユーザーdocx → ユーザーjson → 同梱json")
-
-    # ══════════════════════════════════════════════
-    #  8. グロッサリー
-    # ══════════════════════════════════════════════
-    add_section_heading(doc, "8. 固有名詞辞書（グロッサリー）")
-    add_body(doc,
-        "人名や組織名などの固有名詞を正確に翻訳するための辞書機能です。"
-        "翻訳エンジンに送る前に日本語の固有名詞を対応する外国語表記に直接置換し、"
-        "翻訳後に正しく保持されているかチェックします。"
-    )
-
-    add_h3(doc, "動作の流れ")
-    add_styled_table(doc, ["ステップ", "内容"], [
-        ["1. 前処理", "入力テキスト中の固有名詞をローマ字/英語表記に置換"],
-        ["2. 翻訳", "置換済みテキストを翻訳エンジンに送信"],
-        ["3. 後処理", "翻訳結果に固有名詞が保持されているか確認。欠落時は強制置換"],
-    ], [3, 14])
-
-    add_h3(doc, "辞書の編集")
-    add_body(doc,
-        "設定メニュー →「固有名詞辞書」から、日本語と外国語のペアを追加・削除できます。"
-        "type: \"name\" のエントリのみが固有名詞として処理されます。"
-    )
-
-    add_h3(doc, "登録例")
-    add_styled_table(doc, ["日本語", "外国語"], [
-        ["関智幸", "Tomoyuki Seki"],
-        ["東京弁護士会", "Tokyo Bar Association"],
-    ], [5, 12])
-
-    # ══════════════════════════════════════════════
-    #  9. 辞書検索
-    # ══════════════════════════════════════════════
-    add_section_heading(doc, "9. 辞書検索")
-    add_body(doc,
-        "入力エリアの「辞書」ボタンから、単語やフレーズの翻訳を検索できます。"
-        "翻訳エンジンを使用して双方向（日本語→外国語、外国語→日本語）の"
-        "リアルタイム検索が可能です。"
-    )
-    add_note(doc, "※ 検索結果は参考用です。会話ログには追加されません。")
-
-    doc.add_page_break()
-
-    # ══════════════════════════════════════════════
-    #  10. セッション管理
-    # ══════════════════════════════════════════════
-    add_section_heading(doc, "10. セッション管理・エクスポート")
-
-    add_h3(doc, "セッション")
-    add_body(doc,
-        "アプリ起動からの一連の会話を「セッション」として管理します。"
-        "セッションメニューから新規セッションの開始や終了が可能です。"
-    )
-
-    add_h3(doc, "エクスポート形式")
-    add_styled_table(doc, ["形式", "内容"], [
-        ["JSON保存", "全データ（原文/訳文/中間英語/タイムスタンプ/ルート等）を構造化保存"],
-        ["テキスト出力", "人間可読な形式（話者ラベル + 原文 → 訳文）で出力"],
-    ], [3, 14])
-
-    add_h3(doc, "録音モード")
-    add_styled_table(doc, ["モード", "説明"], [
-        ["OFF", "録音しない（デフォルト）"],
-        ["VOLATILE", "RAM上に一時保存（アプリ終了で消滅）"],
-        ["SAVE", "WAVファイルとして ~/pli-recordings/ に保存"],
-    ], [3, 14])
-
-    # ══════════════════════════════════════════════
-    #  11. 秘匿モード
-    # ══════════════════════════════════════════════
-    add_section_heading(doc, "11. 秘匿モード（Hide / Panic）")
-    add_body(doc, "接見中に第三者の目がある場合に、アプリの存在を隠す機能です。")
-
-    add_h3(doc, "Hide モード（Command+1）")
-    add_body(doc, "画面を即座にダミーPDF表示に切り替えます。トグル操作で元の画面に復帰できます。")
-    add_body(doc, "オプション: 会話ログの消去 / 録音バッファの消去を設定可能")
-
-    add_h3(doc, "Panic モード（Command+2）")
-    add_body(doc, "不可逆のデータ破棄を行います。以下を即座に実行します。")
-    for item in [
-        "録音バッファをゼロで上書き消去",
-        "会話ログを完全消去",
-        "STTを停止",
-        "画面をダミー表示に切替",
-    ]:
-        add_bullet(doc, item)
-    add_note(doc, "Panicモードで消去されたデータは復元できません。")
-
-    # ══════════════════════════════════════════════
-    #  12. ショートカット
-    # ══════════════════════════════════════════════
-    add_section_heading(doc, "12. キーボードショートカット")
-    add_styled_table(doc, ["ショートカット", "機能"], [
-        ["Command+1", "秘匿モード切替（Hide）"],
-        ["Command+2", "パニックボタン（データ全消去）"],
-        ["Command+3", "被疑者画面の表示切替 / 埋込パネル切替"],
-        ["Command+5", "音声認識 ON/OFF"],
-        ["Command+6", "STT: 自動言語検出モード"],
-        ["Command+7", "STT: 弁護人入力モード（日本語固定）"],
-        ["Command+8", "STT: 被疑者入力モード（外国語固定）"],
-        ["Command+D", "テスト: 被疑者発言シミュレーション"],
-        ["Command+/", "ショートカット一覧を表示"],
-        ["Space", "音声認識 ON/OFF（入力欄未選択時）"],
-        ["Enter", "テキスト送信"],
-    ], [4, 13])
-
-    doc.add_page_break()
-
-    # ══════════════════════════════════════════════
-    #  13. 設定項目
-    # ══════════════════════════════════════════════
-    add_section_heading(doc, "13. 設定項目一覧")
-    add_body(doc, "メニューバーの「設定(O)」から各種設定を変更できます。")
-    add_styled_table(doc, ["項目", "説明"], [
-        ["文字サイズ", "3段階のフォントスケーリング（小/中/大）"],
-        ["LLMモデル", "llama.cppモデルファイルの選択"],
-        ["コンテキスト長", "LLMのコンテキストトークン数"],
-        ["翻訳エンジン", "Hybrid / NLLB / LLM の切替"],
-        ["NLLBモデル", "NLLBモデルサイズの選択"],
-        ["OPUS-MTモデル", "OPUS-MTモデルの管理"],
-        ["定型文編集", "定型文テンプレートの追加・編集・削除"],
-        ["固有名詞辞書", "グロッサリーの追加・編集・削除"],
-        ["ダミーPDF", "秘匿モード用のPDFファイル選択"],
-    ], [4, 13])
-
-    add_h3(doc, "設定ファイルの保存先")
-    add_code(doc, "~/pli-models/")
-    add_styled_table(doc, ["ファイル", "内容"], [
-        ["last_engine.txt", "最後に使用した翻訳エンジン"],
-        ["last_model.txt", "最後に使用したLLMモデルパス"],
-        ["last_n_ctx.txt", "最後に使用したコンテキスト長"],
-        ["last_nllb_model.txt", "最後に使用したNLLBモデル"],
-    ], [5, 12])
-
-    # ══════════════════════════════════════════════
-    #  14. 対応言語
-    # ══════════════════════════════════════════════
-    add_section_heading(doc, "14. 対応言語一覧")
-    add_body(doc, "言語(L)メニューから対象言語を選択できます。品質ランクは以下の通りです。")
-    add_styled_table(doc, ["ランク", "説明"], [
-        ["(OPUS直通)", "日本語との直接OPUS-MTモデルあり。最高品質"],
-        ["Tier A", "英語ピボット経由。OPUS-MTで高品質"],
-        ["Tier B", "NLLBフォールバック。実用レベル"],
-    ], [3, 14])
-
-    add_h3(doc, "主な対応言語")
-    add_styled_table(doc, ["言語", "Language", "ランク"], [
-        ["英語", "English", "OPUS直通"],
-        ["中国語(簡体)", "Chinese", "OPUS直通"],
-        ["韓国語", "Korean", "OPUS直通"],
-        ["ベトナム語", "Vietnamese", "Tier A"],
-        ["ポルトガル語", "Portuguese", "Tier A"],
-        ["スペイン語", "Spanish", "Tier A"],
-        ["タガログ語", "Tagalog", "Tier A"],
-        ["ネパール語", "Nepali", "Tier B"],
-        ["ミャンマー語", "Burmese", "Tier B"],
-        ["タイ語", "Thai", "Tier A"],
-        ["インドネシア語", "Indonesian", "Tier A"],
-        ["フランス語", "French", "OPUS直通"],
-    ], [4, 4, 9])
-    add_note(doc, "※ 上記以外にも40以上の言語に対応しています。")
-
-    doc.add_page_break()
-
-    # ══════════════════════════════════════════════
-    #  15. ファイル構成
-    # ══════════════════════════════════════════════
-    add_section_heading(doc, "15. ファイル構成")
-    add_styled_table(doc, ["ファイル", "説明"], [
-        ["main.py", "アプリケーションエントリーポイント"],
-        ["core/interpreter.py", "翻訳エンジン・グロッサリー処理"],
-        ["core/stt_listener.py", "音声認識（mlx-whisper）"],
-        ["core/recorder.py", "音声録音"],
-        ["ui/attorney_window.py", "弁護人ウィンドウ UI"],
-        ["ui/defendant_window.py", "被疑者ウィンドウ UI"],
-        ["data/phrases.json", "定型文テンプレートデータ"],
-        ["data/glossary.json", "固有名詞辞書データ"],
-        ["assets/PLI.icns", "macOSアプリアイコン"],
-        ["PLI.spec", "PyInstallerビルド設定"],
-        ["pyproject.toml", "Pythonプロジェクト設定"],
-        ["requirements.txt", "依存パッケージ一覧"],
-        ["run.sh", "開発用起動スクリプト"],
-    ], [5, 12])
-
-    # ══════════════════════════════════════════════
-    #  16. トラブルシューティング
-    # ══════════════════════════════════════════════
-    add_section_heading(doc, "16. トラブルシューティング")
-    add_styled_table(doc, ["症状", "対処法"], [
-        ["「開発元不明」で起動できない", "Finderで右クリック →「開く」で許可"],
-        ["翻訳が遅い", "Hybridエンジンの初回起動時はモデルダウンロードが必要。2回目以降は高速"],
-        ["マイクが認識されない", "システム設定 → プライバシーとセキュリティ → マイク で許可を確認"],
-        ["固有名詞が正しく翻訳されない", "設定 → 固有名詞辞書に登録。type: name が設定されているか確認"],
-        ["メモリ不足エラー", "翻訳エンジンをHybridまたはNLLBに変更（LLMより軽量）"],
-        ["音声認識が途切れる", "音声認識メニューからテンポ設定を「slow」に変更"],
-        [".appに変更が反映されない", "pyinstaller PLI.spec で再ビルドが必要"],
-    ], [5, 12])
-
-    # ── フッター ──
-    doc.add_paragraph()
-    p = doc.add_paragraph()
-    run = p.add_run("本書は PLI v2.0.0 の仕様に基づいて作成されています。")
-    run.font.size = Pt(8.5)
-    run.font.color.rgb = DGRAY
-    p = doc.add_paragraph()
-    run = p.add_run("作成: 2026年3月14日  |  PLI - Private Link Interpreter")
-    run.font.size = Pt(8.5)
+    run = p.add_run("NO WARRANTY. USE AT YOUR OWN RISK.")
+    run.font.size = Pt(9)
+    run.font.italic = True
     run.font.color.rgb = DGRAY
 
-    # ── 保存 ──
-    output_path = os.path.join(os.path.dirname(__file__), "PLI_仕様書_取扱説明書.docx")
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p.add_run("本ソフトウェアの開発者クレジットを削除・改変することを禁じます。")
+    run.font.size = Pt(8)
+    run.font.italic = True
+    run.font.color.rgb = DGRAY
+
+    # ================================================================
+    # 保存
+    # ================================================================
+    output_path = os.path.join(os.path.expanduser("~/Desktop"),
+                               "PLI_仕様書_取扱説明書.docx")
     doc.save(output_path)
     print(f"Word生成完了: {output_path}")
     return output_path
