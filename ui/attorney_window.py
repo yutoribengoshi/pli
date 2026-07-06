@@ -93,6 +93,9 @@ def _sunken_border(bg=_SUNKEN):
 def _make_btn(label: str, bg: str) -> QPushButton:
     btn = QPushButton(label)
     btn.setCursor(Qt.PointingHandCursor)
+    # Qtボタンはフォーカス時Spaceでクリックされる標準挙動があり、
+    # Spaceショートカット（マイクON/OFF）と衝突するため無効化
+    btn.setFocusPolicy(Qt.NoFocus)
     btn.setStyleSheet(f"""
         QPushButton {{
             background-color: {bg}; color: {_BTN_TEXT};
@@ -311,6 +314,7 @@ class AttorneyWindow(QMainWindow):
         log_toolbar.addStretch()
         copy_all_btn = QPushButton("📋 全会話コピー")
         copy_all_btn.setToolTip("会話ログ全体をクリップボードにコピー")
+        copy_all_btn.setFocusPolicy(Qt.NoFocus)
         copy_all_btn.setStyleSheet(f"""
             QPushButton {{ background-color: {_SURFACE}; color: {_DIM}; font-size: 11px;
                 padding: 2px 10px; border: 1px solid {_RAISED_D}; border-radius: 3px; }}
@@ -386,6 +390,10 @@ class AttorneyWindow(QMainWindow):
             QPushButton:hover {{ background-color: #2a4a7a; }}
         """)
         self._phrase_btn.clicked.connect(self._on_phrase_menu)
+        # Qtボタンはフォーカス時にSpaceキーでクリックされる標準挙動を持つため、
+        # Spaceショートカット（マイクON/OFF）と衝突する。ボタンをクリックしても
+        # Space受信対象にならないよう明示的にNoFocus。
+        self._phrase_btn.setFocusPolicy(Qt.NoFocus)
         input_layout.addWidget(self._phrase_btn)
         self._dict_btn = QPushButton("② 辞書")
         self._dict_btn.setToolTip("辞書検索")
@@ -397,6 +405,7 @@ class AttorneyWindow(QMainWindow):
             QPushButton:hover {{ background-color: #4a7a54; }}
         """)
         self._dict_btn.clicked.connect(self._on_dict_dialog)
+        self._dict_btn.setFocusPolicy(Qt.NoFocus)
         input_layout.addWidget(self._dict_btn)
         self.input_field = QLineEdit()
         self.input_field.setPlaceholderText("日本語を入力してEnter...")
