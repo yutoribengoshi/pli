@@ -58,17 +58,22 @@ class InjectGlossaryTests(unittest.TestCase):
 
     def test_glossary_prepended_for_ja(self):
         base = "日本語を英語に翻訳:\n覚醒剤取締法"
-        out = self.eng._inject_glossary("覚醒剤取締法", "ja", base)
+        out = self.eng._inject_glossary("覚醒剤取締法", "ja", "en", base)
         self.assertIn("Stimulant Drugs Control Act", out)
         self.assertTrue(out.endswith(base))  # 本文は末尾に保持
 
     def test_passthrough_non_ja(self):
         base = "Translate to Japanese:\nhello"
-        self.assertEqual(self.eng._inject_glossary("hello", "en", base), base)
+        self.assertEqual(self.eng._inject_glossary("hello", "en", "ja", base), base)
 
     def test_passthrough_no_match(self):
         base = "日本語を英語に翻訳:\nこんにちは"
-        self.assertEqual(self.eng._inject_glossary("こんにちは", "ja", base), base)
+        self.assertEqual(self.eng._inject_glossary("こんにちは", "ja", "en", base), base)
+
+    def test_passthrough_non_en_target(self):
+        # 辞書は ja→en のみ: 英語以外のターゲットには注入しない（英語混入防止）
+        base = "日本語をベトナム語に翻訳:\n覚醒剤取締法"
+        self.assertEqual(self.eng._inject_glossary("覚醒剤取締法", "ja", "vi", base), base)
 
 
 if __name__ == "__main__":

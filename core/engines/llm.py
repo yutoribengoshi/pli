@@ -301,7 +301,9 @@ class LLMEngine:
         # GPU対応時のみGPUオプション追加
         if gpu_layers > 0:
             cmd += ["--n-gpu-layers", str(gpu_layers)]
-            cmd += ["--flash-attn"]                    # Flash Attention: GPUピークメモリ半減
+            # Flash Attention: GPUピークメモリ半減。llama.cpp b5000系以降は値必須
+            #（旧: --flash-attn 単独 → 新: --flash-attn on。docs/MEMORY_OPTIMIZATION.md と同構文）
+            cmd += ["--flash-attn", "on"]
         logger.info("llm: ティア: %s, スレッド: %s, GPU層: %s",
                     tier_name, threads, gpu_layers)
         logger.info("llm: llama-server 起動中: %s", os.path.basename(model_path))
@@ -500,13 +502,16 @@ class LLMEngine:
                 pass
         resp.close()
 
-    def _inject_glossary(self, text: str, src_lang: str, user_msg: str) -> str:
+    def _inject_glossary(self, text: str, src_lang: str, tgt_lang: str,
+                         user_msg: str) -> str:
         """入力文に出現した法律用語の正式訳を user メッセージ先頭に注入する。
 
         systemプロンプトは不変に保つ（prefixキャッシュ保全＝レイテンシ対策）。
-        当面 ja 起点のみ対応。辞書未配置・未マッチ・例外時は素通り。
+        辞書（legal_dict.json）は ja→en の英語定訳のみなので ja→en のときだけ注入する
+        （英語以外のターゲットに en 定訳を「必ず使え」と指示すると英語混入の原因になる）。
+        辞書未配置・未マッチ・例外時は素通り。
         """
-        if src_lang != "ja":
+        if src_lang != "ja" or tgt_lang != "en":
             return user_msg
         try:
             from core.legal_dict import retrieve_terms, format_glossary_for_prompt
@@ -521,7 +526,7 @@ class LLMEngine:
         src_name = "日本語" if src_lang == "ja" else get_language_name(src_lang)
         tgt_name = "日本語" if tgt_lang == "ja" else get_language_name(tgt_lang)
         user_msg = f"{src_name}を{tgt_name}に翻訳:\n{text}"
-        user_msg = self._inject_glossary(text, src_lang, user_msg)
+        user_msg = self._inject_glossary(text, src_lang, tgt_lang, user_msg)
         system = make_translate_system(tgt_lang)
         return self._chat(system, user_msg)
 
@@ -529,7 +534,7 @@ class LLMEngine:
         src_name = "日本語" if src_lang == "ja" else get_language_name(src_lang)
         tgt_name = "日本語" if tgt_lang == "ja" else get_language_name(tgt_lang)
         user_msg = f"{src_name}を{tgt_name}に翻訳:\n{text}"
-        user_msg = self._inject_glossary(text, src_lang, user_msg)
+        user_msg = self._inject_glossary(text, src_lang, tgt_lang, user_msg)
         system = make_translate_system(tgt_lang)
         for chunk in self._chat(system, user_msg, stream=True):
             delta = chunk["choices"][0]["delta"].get("content", "")
