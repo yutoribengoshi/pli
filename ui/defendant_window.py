@@ -3,7 +3,7 @@ PLI Defendant Display - 被疑者側ディスプレイ（表示専用）
 平成初期レトロUI — クリーム地に紺と緑、一太郎的な佇まい
 13インチポータブルモニター向け
 
-Copyright (c) 2025-2026 中野通り法律事務所 弁護士 関智之（東京弁護士会所属）（東京弁護士会所属）(Tomoyuki Seki)
+Copyright (c) 2025-2026 中野通り法律事務所 弁護士 関智之（東京弁護士会所属）(Tomoyuki Seki)
 All rights reserved.
 
 DefendantPanel(QWidget) — 表示ロジック本体（埋め込み可）
@@ -531,9 +531,14 @@ class DefendantPanel(QWidget):
             self._status_banner = None
 
     def _scroll_to_bottom(self):
-        QTimer.singleShot(100, lambda: self.scroll_area.verticalScrollBar().setValue(
-            self.scroll_area.verticalScrollBar().maximum()
-        ))
+        # 呼び出し時点で最下部付近にいた場合だけ追従する（stick to bottom）。
+        # 分割表示で先生が上のログを読んでいる時に、相手発話が来るたび引き
+        # ずり下ろされる事故を防ぐ。attorney_window 側と同じ挙動。
+        sb = self.scroll_area.verticalScrollBar()
+        was_at_bottom = (sb.maximum() - sb.value()) <= 120
+        if not was_at_bottom:
+            return
+        QTimer.singleShot(100, lambda: sb.setValue(sb.maximum()))
 
 
 # ---------------------------------------------------------------------------
