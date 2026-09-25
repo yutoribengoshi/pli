@@ -349,16 +349,15 @@ class HybridEngine:
             )
 
         # --- Stage 1: OPUS-MT 直接翻訳 ---
-        # ブラックリスト (en-ja=聖書モデル等) → NLLB HFにフォールバック
+        # ブラックリスト (en-ja=聖書モデル等) → NLLB CTranslate2優先、HFフォールバック
         if pair_key in self._opus_blacklist:
             try:
-                result = self._translate_nllb_hf(text, src_lang, tgt_lang)
-                route = f"NLLB直接 ({src_lang}→{tgt_lang})"
+                result, route = self._translate_blacklisted(text, src_lang, tgt_lang)
                 logger.debug("hybrid: %s", route)
                 # 直接翻訳: 中間文なし（ピボット翻訳時のみ英語中間文を表示）
                 return _result(result, "", route)
             except Exception as e:
-                logger.warning("hybrid: NLLB HF翻訳失敗: %s", e)
+                logger.warning("hybrid: NLLB直接翻訳失敗 (%s): %s", pair_key, e)
         elif self._ensure_opus_loaded(src_lang, tgt_lang):
             try:
                 import ctranslate2
@@ -510,12 +509,29 @@ class HybridEngine:
         """ハイブリッド翻訳（互換ラッパー）"""
         return self.translate_detail(text, src_lang, tgt_lang).final_text
 
+    def _translate_blacklisted(self, text: str, src: str, tgt: str) -> tuple[str, str]:
+        """OPUS-MTを使わないペア（en-ja等）をNLLBで翻訳し、(訳文, 経路) を返す
+
+        pli-models の CTranslate2 版 NLLB を優先し、使えないときだけ
+        HuggingFace 版（nllb-200-distilled-600M）にフォールバックする。
+        windows-enhancements (6c34d40) の en→ja 修正の移植。
+        """
+        self._ensure_nllb_loaded()
+        if self._nllb_engine and self._nllb_engine.is_ready:
+            try:
+                return (self._nllb_engine.translate(text, src, tgt),
+                        f"NLLB直接 ({src}→{tgt})")
+            except Exception as e:
+                logger.warning("hybrid: NLLB CT2翻訳失敗、HFフォールバック: %s", e)
+        return (self._translate_nllb_hf(text, src, tgt),
+                f"NLLB-HF直接 ({src}→{tgt})")
+
     def _do_opus_translate(self, src: str, tgt: str, text: str) -> str:
-        """OPUS-MTで翻訳（内部用）。ブラックリストペアはNLLB HFにフォールバック"""
+        """OPUS-MTで翻訳（内部用）。ブラックリストペアはNLLB（CT2優先）で翻訳"""
         pair_key = self._get_opus_pair_key(src, tgt)
-        # ブラックリストペア → NLLB HF
+        # ブラックリストペア → NLLB CT2優先、HFフォールバック
         if pair_key in self._opus_blacklist:
-            raw = self._translate_nllb_hf(text, src, tgt)
+            raw, _route = self._translate_blacklisted(text, src, tgt)
             return self._clean_output(raw)
         self._ensure_opus_loaded(src, tgt)
         try:
