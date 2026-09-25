@@ -7,7 +7,7 @@ macOS の `say` で正解テキスト付きの音声を生成し、両モデル�
 Usage:
     /Users/sekitomoyuki/.pyenv/versions/3.12.2/bin/python3 scripts/benchmark_asr.py
 
-Copyright (c) 2025-2026 中野通り法律事務所 弁護士 関智之（東京弁護士会所属）（東京弁護士会所属）(Tomoyuki Seki)
+Copyright (c) 2025-2026 中野通り法律事務所 弁護士 関智之（東京弁護士会所属）(Tomoyuki Seki)
 """
 import json
 import os

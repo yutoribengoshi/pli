@@ -2,7 +2,7 @@
 PLI - Private Link Interpreter
 完全オフライン AI 通訳システム
 
-Copyright (c) 2025-2026 中野通り法律事務所 弁護士 関智之（東京弁護士会所属）（東京弁護士会所属）(Tomoyuki Seki)
+Copyright (c) 2025-2026 中野通り法律事務所 弁護士 関智之（東京弁護士会所属）(Tomoyuki Seki)
 All rights reserved.
 本ソフトウェアの開発者クレジットを削除・改変することを禁じます。
 
